@@ -270,7 +270,7 @@ void readFile(const char* fileName) {
     lock.l_start = 0;
     lock.l_len = 0; // Lock the entire file
     
-    if (fcntl(fd, F_SETLK, &lock) == -1) {
+    if (fcntl(fd, F_SETLKW, &lock) == -1) {
         char error_msg[BUFFER_SIZE] = "Error: Cannot read \"";
         strcat(error_msg, fileName);
         strcat(error_msg, "\". File is locked for writing.");
@@ -336,7 +336,7 @@ void appendToFile(const char* fileName, const char* content) {
     lock.l_len = 0; // Lock the entire file
 
     // Try to get an exclusive write lock - will fail if any locks exist
-    if (fcntl(fd, F_SETLK, &lock) == -1) {
+    if (fcntl(fd, F_SETLKW, &lock) == -1) {
         char error_msg[BUFFER_SIZE] = "Error: Cannot write to \"";
         strcat(error_msg, fileName);
         strcat(error_msg, "\". File is currently being accessed by another process.");

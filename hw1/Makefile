@@ -116,45 +116,40 @@ test_errors: $(TARGET)
 	@rm -rf test_dir
 
 test_file_locking: $(TARGET)
-	@echo "\n===== TESTING FILE LOCKING OPERATIONS ====="
+	@echo "\n===== TESTING FILE LOCKING OPERATIONS (WITH F_SETLKW) ====="
 	@rm -rf lock_test_dir
 	./$(TARGET) createDir lock_test_dir
 	./$(TARGET) createFile lock_test_dir/locked_file.txt
 	
-	@echo "\n1. Testing read locking"
-	@echo "   a. Starting read operation in background"
-	./$(TARGET) readFile lock_test_dir/locked_file.txt & \
+	@echo "\n1. Testing read locking (shared access)"
+	@echo "   a. Starting read operation in background..."
+	./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null & \
 	PID1=$$!; \
 	sleep 1; \
-	echo "   b. Attempting second read during active read (should succeed)"; \
-	./$(TARGET) readFile lock_test_dir/locked_file.txt & \
+	echo "   b. Starting second read (should succeed immediately)..."; \
+	./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null & \
 	PID2=$$!; \
-	sleep 1; \
-	echo "   c. Attempting write during active reads (should block/fail)"; \
-	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Write during read" & \
-	PID3=$$!; \
-	sleep 3; \
-	kill -9 $$PID1 $$PID2 $$PID3 2>/dev/null || true
+	wait $$PID1 $$PID2; \
+	echo "   c. Both reads completed. Testing write lock contention..."; \
+	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Write after reads" 
 	
-	@echo "\n2. Testing write locking"
-	@echo "   a. Starting write operation in background"
-	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "First write operation" & \
+	@echo "\n2. Testing write locking (exclusive access)"
+	@echo "   a. Starting write operation in background (will block others)..."
+	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "First write" > /dev/null & \
 	PID1=$$!; \
 	sleep 1; \
-	echo "   b. Attempting second write during active write (should block/fail)"; \
-	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Second write operation" & \
+	echo "   b. Attempting concurrent write (should block until first completes)..."; \
+	( timeout 5 ./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Second write" > /dev/null && echo "   ✓ Write succeeded after lock release" || echo "   ✗ Write timed out (still locked)" ) & \
 	PID2=$$!; \
-	sleep 1; \
-	echo "   c. Attempting read during active write (should block/fail)"; \
-	./$(TARGET) readFile lock_test_dir/locked_file.txt & \
+	echo "   c. Attempting concurrent read (should block)..."; \
+	( timeout 5 ./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null && echo "   ✓ Read succeeded after lock release" || echo "   ✗ Read timed out (still locked)" ) & \
 	PID3=$$!; \
-	sleep 3; \
-	kill -9 $$PID1 $$PID2 $$PID3 2>/dev/null || true
+	wait $$PID1; \
+	echo "   d. First write completed. Waiting for pending operations..."; \
+	wait $$PID2 $$PID3; 
 	
 	@echo "\n3. Testing lock release after completion"
-	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Testing lock release"
-	sleep 1
-	@echo "   Verifying file can be accessed after previous operation completes:"
+	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Final content"
 	./$(TARGET) readFile lock_test_dir/locked_file.txt
 	
 	@rm -rf lock_test_dir
