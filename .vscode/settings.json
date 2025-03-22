@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "test_syllable_data": "plaintext",
+        "test_lowercase_data": "plaintext",
+        "stat.h": "c",
+        "errno.h": "c"
+    }
+}
