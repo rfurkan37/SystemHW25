@@ -155,6 +155,100 @@ test_file_locking: $(TARGET)
 	@rm -rf lock_test_dir
 	@echo "\n===== FILE LOCKING TESTS COMPLETED ====="
 
+test_non_blocking_locks: $(TARGET)
+	@echo "\n===== TESTING NON-BLOCKING LOCK ATTEMPTS (F_SETLK) ====="
+	@rm -rf non_block_test
+	./$(TARGET) createDir non_block_test
+	./$(TARGET) createFile non_block_test/file.txt
+	
+	@echo "\n1. Acquire a write lock in the background..."
+	./$(TARGET) appendToFile non_block_test/file.txt "Locked content" > /dev/null & \
+	PID1=$$!; \
+	sleep 1; \
+	@echo "2. Attempt non-blocking read (should fail immediately)..."; \
+	./$(TARGET) readFile non_block_test/file.txt > /dev/null 2>&1 && echo "   ✗ Read succeeded (unexpected)" || echo "   ✓ Read failed (expected)"; \
+	wait $$PID1; \
+	
+	@rm -rf non_block_test
+	@echo "\n===== NON-BLOCKING LOCK TESTS COMPLETED ====="
+
+test_lock_release_on_kill: $(TARGET)
+	@echo "\n===== TESTING LOCK RELEASE AFTER PROCESS KILL ====="
+	@rm -rf kill_test
+	./$(TARGET) createDir kill_test
+	./$(TARGET) createFile kill_test/file.txt
+	
+	@echo "\n1. Start a long-running write operation in the background..."
+	./$(TARGET) appendToFile kill_test/file.txt "Locked content..." > /dev/null & \
+	PID1=$$!; \
+	sleep 1; \
+	@echo "2. Kill the process holding the lock..."; \
+	kill -9 $$PID1; \
+	sleep 1; \
+	@echo "3. Verify lock is released by attempting a new write..."; \
+	./$(TARGET) appendToFile kill_test/file.txt "New content" > /dev/null && echo "   ✓ Write succeeded (lock released)" || echo "   ✗ Write failed (lock still held)"; \
+	
+	@rm -rf kill_test
+	@echo "\n===== LOCK RELEASE ON KILL TESTS COMPLETED ====="
+
+test_multiple_writers: $(TARGET)
+	@echo "\n===== TESTING MULTIPLE CONCURRENT WRITERS ====="
+	@rm -rf multi_writer_test
+	./$(TARGET) createDir multi_writer_test
+	./$(TARGET) createFile multi_writer_test/file.txt
+	
+	@echo "\n1. Start three concurrent writes (only one should proceed at a time)..."
+	./$(TARGET) appendToFile multi_writer_test/file.txt "Write 1" > /dev/null & \
+	PID1=$$!; \
+	./$(TARGET) appendToFile multi_writer_test/file.txt "Write 2" > /dev/null & \
+	PID2=$$!; \
+	./$(TARGET) appendToFile multi_writer_test/file.txt "Write 3" > /dev/null & \
+	PID3=$$!; \
+	wait $$PID1 $$PID2 $$PID3; \
+	@echo "2. Verify all writes completed sequentially..."; \
+	./$(TARGET) readFile multi_writer_test/file.txt | grep -q "Write 1" && echo "   ✓ Write 1 found" || echo "   ✗ Write 1 missing"; \
+	./$(TARGET) readFile multi_writer_test/file.txt | grep -q "Write 2" && echo "   ✓ Write 2 found" || echo "   ✗ Write 2 missing"; \
+	./$(TARGET) readFile multi_writer_test/file.txt | grep -q "Write 3" && echo "   ✓ Write 3 found" || echo "   ✗ Write 3 missing"; \
+	
+	@rm -rf multi_writer_test
+	@echo "\n===== MULTIPLE WRITER TESTS COMPLETED ====="
+
+test_lock_after_deletion: $(TARGET)
+	@echo "\n===== TESTING LOCKS ON DELETED FILES ====="
+	@rm -rf delete_test
+	./$(TARGET) createDir delete_test
+	./$(TARGET) createFile delete_test/file.txt
+	
+	@echo "\n1. Open and lock the file in the background..."
+	./$(TARGET) readFile delete_test/file.txt > /dev/null & \
+	PID1=$$!; \
+	sleep 1; \
+	@echo "2. Delete the file while it's locked..."; \
+	./$(TARGET) deleteFile delete_test/file.txt; \
+	@echo "3. Verify the original process can still read the deleted file..."; \
+	wait $$PID1 && echo "   ✓ Read succeeded (file still accessible to holder)" || echo "   ✗ Read failed"; \
+	
+	@rm -rf delete_test
+	@echo "\n===== LOCK AFTER DELETION TESTS COMPLETED ====="
+
+test_lock_logging: $(TARGET)
+	@echo "\n===== TESTING LOCK ERROR LOGGING ====="
+	@rm -rf log_test
+	./$(TARGET) createDir log_test
+	./$(TARGET) createFile log_test/file.txt
+	
+	@echo "\n1. Trigger a lock conflict and check logs..."
+	./$(TARGET) appendToFile log_test/file.txt "Lock holder" > /dev/null & \
+	PID1=$$!; \
+	sleep 1; \
+	./$(TARGET) appendToFile log_test/file.txt "Conflicting write" 2> /dev/null; \
+	wait $$PID1; \
+	@echo "2. Verify logs contain lock error..."; \
+	./$(TARGET) showLogs | grep -q "File is currently being accessed" && echo "   ✓ Lock error logged" || echo "   ✗ Lock error missing from logs"; \
+	
+	@rm -rf log_test
+	@echo "\n===== LOCK LOGGING TESTS COMPLETED ====="
+
 test: $(TARGET)
 	@echo "Running simple test scenario..."
 	@echo "1. Creating directory testDir"
