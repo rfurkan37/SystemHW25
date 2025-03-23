@@ -1,9 +1,6 @@
 #ifndef UTILS_H
 #define UTILS_H
 
-#include <stdarg.h>
-
-/* Define NULL if it's not already defined (avoiding stdio.h) */
 #ifndef NULL
 #define NULL ((void*)0)
 #endif
