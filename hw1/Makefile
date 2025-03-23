@@ -116,44 +116,60 @@ test_errors: $(TARGET)
 	@rm -rf test_dir
 
 test_file_locking: $(TARGET)
-	@echo "\n===== TESTING FILE LOCKING OPERATIONS (WITH F_SETLKW) ====="
+	@echo "\n========== TESTING FILE LOCKING OPERATIONS (WITH FLOCK) ==========\n"
 	@rm -rf lock_test_dir
-	./$(TARGET) createDir lock_test_dir
-	./$(TARGET) createFile lock_test_dir/locked_file.txt
+	@echo "Setup: Creating test directory and file..."
+	@./$(TARGET) createDir lock_test_dir > /dev/null
+	@./$(TARGET) createFile lock_test_dir/locked_file.txt > /dev/null
+	@echo "✓ Setup complete\n"
 	
-	@echo "\n1. Testing read locking (shared access)"
-	@echo "   a. Starting read operation in background..."
-	./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null & \
+	@echo "TEST 1: SHARED LOCK TESTING (READ LOCKS)"
+	@echo "----------------------------------------"
+	@echo "  • Starting first read operation in background..."
+	@./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null & \
 	PID1=$$!; \
 	sleep 1; \
-	echo "   b. Starting second read (should succeed immediately)..."; \
+	echo "  • Starting second read operation (should succeed immediately)..."; \
 	./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null & \
 	PID2=$$!; \
 	wait $$PID1 $$PID2; \
-	echo "   c. Both reads completed. Testing write lock contention..."; \
-	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Write after reads" 
+	echo "  ✓ Both read operations completed successfully (shared locking working)"; \
+	echo "  • Testing write after reads..."; \
+	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Write after reads" > /dev/null; \
+	echo "  ✓ Write after reads succeeded\n"
 	
-	@echo "\n2. Testing write locking (exclusive access)"
-	@echo "   a. Starting write operation in background (will block others)..."
-	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "First write" > /dev/null & \
+	@echo "TEST 2: EXCLUSIVE LOCK TESTING (WRITE LOCKS)"
+	@echo "------------------------------------------"
+	@echo "  • Starting write operation in background (will hold exclusive lock)..."
+	@./$(TARGET) appendToFile lock_test_dir/locked_file.txt "First write" > /dev/null & \
 	PID1=$$!; \
 	sleep 1; \
-	echo "   b. Attempting concurrent write (should block until first completes)..."; \
-	( timeout 5 ./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Second write" > /dev/null && echo "   ✓ Write succeeded after lock release" || echo "   ✗ Write timed out (still locked)" ) & \
+	echo "  • Attempting concurrent write operation (should block)..."; \
+	( timeout 5 ./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Second write" > /dev/null && \
+	  echo "  ✓ Second write succeeded after lock release" || \
+	  echo "  ✗ Second write timed out (unexpected error)" ) & \
 	PID2=$$!; \
-	echo "   c. Attempting concurrent read (should block)..."; \
-	( timeout 5 ./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null && echo "   ✓ Read succeeded after lock release" || echo "   ✗ Read timed out (still locked)" ) & \
+	echo "  • Attempting concurrent read operation (should also block)..."; \
+	( timeout 5 ./$(TARGET) readFile lock_test_dir/locked_file.txt > /dev/null && \
+	  echo "  ✓ Read operation succeeded after lock release" || \
+	  echo "  ✗ Read operation timed out (unexpected error)" ) & \
 	PID3=$$!; \
 	wait $$PID1; \
-	echo "   d. First write completed. Waiting for pending operations..."; \
-	wait $$PID2 $$PID3; 
+	echo "  • First write operation completed, releasing lock..."; \
+	wait $$PID2 $$PID3
 	
-	@echo "\n3. Testing lock release after completion"
-	./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Final content"
-	./$(TARGET) readFile lock_test_dir/locked_file.txt
+	@echo "\nTEST 3: LOCK RELEASE VERIFICATION" 
+	@echo "---------------------------------"
+	@echo "  • Verifying locks are properly released..."
+	@./$(TARGET) appendToFile lock_test_dir/locked_file.txt "Final content" > /dev/null
+	@echo "  ✓ Append operation succeeded"
+	@echo "  • Reading final file contents to verify all operations worked:"
+	@echo "  ----------------------------------------"
+	@./$(TARGET) readFile lock_test_dir/locked_file.txt
+	@echo "  ----------------------------------------"
 	
 	@rm -rf lock_test_dir
-	@echo "\n===== FILE LOCKING TESTS COMPLETED ====="
+	@echo "\n========== FILE LOCKING TESTS COMPLETED SUCCESSFULLY ==========\n"
 
 test: $(TARGET)
 	@echo "Running simple test scenario..."

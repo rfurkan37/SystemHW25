@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/file.h>
 #include <dirent.h>
 #include <string.h>
 #include <stdlib.h>
@@ -242,7 +243,7 @@ void listFilesByExtension(const char* dirName, const char* extension) {
     }
 }
 
-/* Read file content */
+/* Read file content with simplified locking using flock() */
 void readFile(const char* fileName) {
     struct stat st = {0};
     if (stat(fileName, &st) == -1) {
@@ -263,14 +264,8 @@ void readFile(const char* fileName) {
         return;
     }
 
-    // Set a read lock to prevent writes but allow other reads
-    struct flock lock;
-    lock.l_type = F_RDLCK;
-    lock.l_whence = SEEK_SET;
-    lock.l_start = 0;
-    lock.l_len = 0; // Lock the entire file
-    
-    if (fcntl(fd, F_SETLKW, &lock) == -1) {
+    // Apply a shared lock (allows other reads but not writes)
+    if (flock(fd, LOCK_SH) == -1) {
         char error_msg[BUFFER_SIZE] = "Error: Cannot read \"";
         strcat(error_msg, fileName);
         strcat(error_msg, "\". File is locked for writing.");
@@ -295,10 +290,8 @@ void readFile(const char* fileName) {
     
     write(STDOUT_FILENO, "\n", 1);
     
-    // Release the read lock
-    lock.l_type = F_UNLCK;
-    fcntl(fd, F_SETLK, &lock);
-    
+    // Release the lock
+    flock(fd, LOCK_UN);
     close(fd);
     
     char log_msg[BUFFER_SIZE] = "File \"";
@@ -307,7 +300,7 @@ void readFile(const char* fileName) {
     logOperation(log_msg);
 }
 
-/* Append content to file */
+/* Append content to file with simplified locking using flock() */
 void appendToFile(const char* fileName, const char* content) {
     struct stat st = {0};
     if (stat(fileName, &st) == -1) {
@@ -329,14 +322,8 @@ void appendToFile(const char* fileName, const char* content) {
         return;
     }
 
-    struct flock lock;
-    lock.l_type = F_WRLCK;
-    lock.l_whence = SEEK_SET;
-    lock.l_start = 0;
-    lock.l_len = 0; // Lock the entire file
-
-    // Try to get an exclusive write lock - will fail if any locks exist
-    if (fcntl(fd, F_SETLKW, &lock) == -1) {
+    // Apply an exclusive lock (prevents all other access)
+    if (flock(fd, LOCK_EX) == -1) {
         char error_msg[BUFFER_SIZE] = "Error: Cannot write to \"";
         strcat(error_msg, fileName);
         strcat(error_msg, "\". File is currently being accessed by another process.");
@@ -350,9 +337,7 @@ void appendToFile(const char* fileName, const char* content) {
     write(fd, content, strlen(content));
     
     // Release the lock
-    lock.l_type = F_UNLCK;
-    fcntl(fd, F_SETLK, &lock);
-    
+    flock(fd, LOCK_UN);
     close(fd);
     
     char log_msg[BUFFER_SIZE] = "Content appended to file \"";
