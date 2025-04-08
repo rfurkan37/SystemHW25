@@ -139,7 +139,7 @@ test: clean $(TARGET)
 	@echo "2. Exit status printing: Check the program output for exit status of child processes"
 
 # Individual test targets for specific components
-test-basic: $(TARGET) clean
+test-basic: clean $(TARGET)
 	@echo "Testing basic functionality..."
 	./$(TARGET) 10 5
 
