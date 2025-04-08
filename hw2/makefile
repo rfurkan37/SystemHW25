@@ -8,81 +8,147 @@ $(TARGET): main.c
 	$(CC) $(CFLAGS) -o $(TARGET) main.c
 
 clean:
-	rm -f $(TARGET)
-	rm -f /tmp/fifo1 /tmp/fifo2 /tmp/log_fifo
-	rm -f /tmp/daemon.log
+	sudo rm -f $(TARGET)
+	sudo rm -f /tmp/fifo1 /tmp/fifo2 /tmp/log_fifo
+	sudo rm -f /tmp/daemon.log
+	-pkill -f $(TARGET) || true
 
-# Comprehensive test suite
-test: $(TARGET)
-	@echo "========== RUNNING COMPREHENSIVE TESTS =========="
-	@echo "\n1. Basic Functionality Tests:"
-	@echo "Test with first number larger"
-	@./$(TARGET) 10 5 & pid1=$$!; sleep 20; kill -0 $$pid1 2>/dev/null || echo "Test completed successfully"
-	@echo "\nTest with second number larger"
-	@./$(TARGET) 3 8 & pid2=$$!; sleep 20; kill -0 $$pid2 2>/dev/null || echo "Test completed successfully"
-	@echo "\nTest with equal numbers"
-	@./$(TARGET) 7 7 & pid3=$$!; sleep 20; kill -0 $$pid3 2>/dev/null || echo "Test completed successfully"
-	@echo "\nTest with negative number"
-	@./$(TARGET) -5 10 & pid4=$$!; sleep 20; kill -0 $$pid4 2>/dev/null || echo "Test completed successfully"
+# Key functionality tests based on PDF requirements
+test: clean $(TARGET)
+	@echo "========== TESTING IPC PROGRAM REQUIREMENTS =========="
 	
-	@echo "\n2. FIFO Communication Test:"
-	@echo "Running program and checking log..."
-	@./$(TARGET) 100 200 & pid5=$$!; sleep 20; kill -0 $$pid5 2>/dev/null || echo "Test completed"
-	@echo "Log contents:"
-	@cat /tmp/daemon.log | tail -10
+	@echo "\n[Test 1] Basic functionality with command line arguments:"
+	@./$(TARGET) 42 17 & \
+	pid=$$!; \
+	echo "Program started with PID: $$pid"; \
+	echo "Waiting for completion (30 seconds max)..."; \
+	for i in $$(seq 1 30); do \
+		sleep 1; \
+		if ! kill -0 $$pid 2>/dev/null; then \
+			echo "Program completed after $$i seconds"; \
+			break; \
+		fi; \
+		if [ $$i -eq 30 ]; then \
+			echo "WARNING: Program did not complete within 30 seconds"; \
+			kill -TERM $$pid; \
+		fi; \
+	done
 	
-	@echo "\n3. Signal Handling Test:"
-	@echo "Running program in background..."
-	@./$(TARGET) 15 25 & pid6=$$!; sleep 5; \
-	echo "Sending SIGUSR1 signal..."; \
-	kill -USR1 $$pid6 2>/dev/null || echo "Process already completed"; \
-	sleep 15; kill -0 $$pid6 2>/dev/null || echo "Test completed"
-	
-	@echo "\n4. Zombie Protection Verification:"
-	@echo "Checking for zombie processes after execution..."
-	@./$(TARGET) 1 2 & pid7=$$!; sleep 15; \
-	zombie_count=$$(ps aux | grep defunct | grep -v grep | wc -l); \
-	if [ "$$zombie_count" -eq 0 ]; then echo "No zombies found - Zombie protection works!"; \
-	else echo "WARNING: $$zombie_count zombie processes found"; fi; \
-	sleep 5; kill -0 $$pid7 2>/dev/null || echo "Test completed"
-	
-	@echo "\n5. Memory Test (requires valgrind):"
-	@if command -v valgrind > /dev/null; then \
-		echo "Running with valgrind..."; \
-		timeout 30s valgrind --leak-check=full --error-exitcode=1 ./$(TARGET) 30 40 2>&1 | grep -E "ERROR SUMMARY|heap usage"; \
-	else \
-		echo "Valgrind not installed. Skipping memory test."; \
-	fi
-	
-	@echo "\n========== TEST SUMMARY =========="
-	@echo "All tests executed. Check output for any errors or warnings."
-	@echo "For a complete verification, also manually check:"
-	@echo "1. Exit status reporting"
-	@echo "2. Daemon process logging"
-	@echo "3. Error handling in edge cases"
-
-# Test specific components individually
-test-basic: $(TARGET)
-	@echo "Testing basic functionality..."
-	@./$(TARGET) 10 5
-
-test-memory: $(TARGET)
-	@echo "Testing for memory leaks (requires valgrind)..."
-	@if command -v valgrind > /dev/null; then \
-		valgrind --leak-check=full ./$(TARGET) 15 25; \
-	else \
-		echo "Valgrind not installed. Cannot perform memory test."; \
-	fi
-
-test-zombies: $(TARGET)
-	@echo "Testing zombie process prevention..."
-	@./$(TARGET) 7 8 & \
+	@echo "\n[Test 2] Verify all processes exited properly (no zombies):"
+	@echo "Running program and checking for zombies..."
+	@./$(TARGET) 55 66 & \
 	pid=$$!; \
 	sleep 15; \
 	zombie_count=$$(ps aux | grep defunct | grep -v grep | wc -l); \
+	echo "Current zombie count: $$zombie_count"; \
 	if [ "$$zombie_count" -eq 0 ]; then \
-		echo "No zombies found - Zombie protection works!"; \
+		echo "✓ No zombies found - Zombie protection works!"; \
 	else \
-		echo "WARNING: $$zombie_count zombie processes found"; \
+		echo "✗ WARNING: $$zombie_count zombie processes found"; \
 	fi; \
-	kill -0 $$pid 2>/dev/null || echo "Process completed normally"
+	wait $$pid || echo "Process already exited"
+	
+	@echo "\n[Test 3] FIFO creation and communication:"
+	@./$(TARGET) 100 50 & \
+	pid=$$!; \
+	sleep 5; \
+	if [ -p /tmp/fifo1 ] && [ -p /tmp/fifo2 ] && [ -p /tmp/log_fifo ]; then \
+		echo "✓ All FIFOs created successfully"; \
+	else \
+		echo "✗ FIFO creation failed"; \
+		[ -p /tmp/fifo1 ] || echo "  - fifo1 missing"; \
+		[ -p /tmp/fifo2 ] || echo "  - fifo2 missing"; \
+		[ -p /tmp/log_fifo ] || echo "  - log_fifo missing"; \
+	fi; \
+	wait $$pid || echo "Process already exited"
+	
+	@echo "\n[Test 4] Daemon process and logging:"
+	@echo "Checking if daemon creates log file..."
+	@./$(TARGET) 33 77 & \
+	pid=$$!; \
+	sleep 15; \
+	if [ -f /tmp/daemon.log ]; then \
+		echo "✓ Daemon log file created"; \
+		echo "Log file content (last 10 lines):"; \
+		tail -10 /tmp/daemon.log; \
+	else \
+		echo "✗ Daemon log file not found"; \
+	fi; \
+	wait $$pid || echo "Process already exited"
+	
+	@echo "\n[Test 5] Verify correct calculation of larger number:"
+	@echo "Testing with first number larger..."
+	@./$(TARGET) 200 100 > test_output.txt & \
+	pid=$!; \
+	sleep 25; \
+	grep -q "The larger number is 200" test_output.txt && \
+		echo "✓ Correctly identified 200 as larger" || \
+		echo "✗ Failed to identify correct larger number"; \
+	wait $pid 2>/dev/null || true
+	
+	@echo "Testing with second number larger..."
+	@./$(TARGET) 50 150 > test_output.txt & \
+	pid=$!; \
+	sleep 25; \
+	grep -q "The larger number is 150" test_output.txt && \
+		echo "✓ Correctly identified 150 as larger" || \
+		echo "✗ Failed to identify correct larger number"; \
+	wait $pid || echo "Process already exited"
+	@rm -f test_output.txt
+	
+	@echo "\n[Test 6] Verify child process sleep and execution:"
+	@echo "Running program and monitoring child processes..."
+	@./$(TARGET) 88 99 & \
+	main_pid=$$!; \
+	sleep 3; \
+	child_pids=$$(pgrep -P $$main_pid || echo ""); \
+	echo "Child PIDs: $$child_pids"; \
+	if [ -n "$$child_pids" ]; then \
+		echo "✓ Child processes created"; \
+		echo "Waiting for child processes to finish after sleep..."; \
+		sleep 15; \
+		remaining=$$(pgrep -P $$main_pid || echo ""); \
+		if [ -z "$$remaining" ]; then \
+			echo "✓ All child processes completed after sleep period"; \
+		else \
+			echo "✗ Some child processes remain after expected completion"; \
+		fi; \
+	else \
+		echo "✗ No child processes found"; \
+	fi; \
+	wait $$main_pid || echo "Process already exited"
+	
+	@echo "\n[Test 7] SIGCHLD handling and counter increment:"
+	@echo "Running program and checking if it exits after children complete..."
+	@./$(TARGET) 111 222 & \
+	pid=$$!; \
+	sleep 5; \
+	echo "Program started, waiting for completion..."; \
+	sleep 25; \
+	if kill -0 $$pid 2>/dev/null; then \
+		echo "✗ Program still running after children should have completed"; \
+		kill -TERM $$pid; \
+	else \
+		echo "✓ Program exited properly after children completed"; \
+	fi
+	
+	@echo "\n========== TEST SUMMARY =========="
+	@echo "All tests completed. Please review the results above."
+	@echo "For the bonus requirements:"
+	@echo "1. Zombie protection: Test 2 verifies this functionality"
+	@echo "2. Exit status printing: Check the program output for exit status of child processes"
+
+# Individual test targets for specific components
+test-basic: $(TARGET) clean
+	@echo "Testing basic functionality..."
+	./$(TARGET) 10 5
+
+# Run memory test with valgrind if available
+test-memory: clean $(TARGET)
+	@which valgrind > /dev/null; \
+	if [ $$? -eq 0 ]; then \
+		echo "Running memory test with valgrind..."; \
+		valgrind --leak-check=full --show-leak-kinds=all ./$(TARGET) 10 20; \
+	else \
+		echo "Valgrind not found. Install it to run memory tests."; \
+	fi
