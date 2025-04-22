@@ -10,11 +10,11 @@
 // --- Configuration ---
 #define NUM_ENGINEERS 3
 #define NUM_SATELLITES 5 // As per example scenario
-#define CONNECTION_TIMEOUT 5 // Max wait time for satellite in seconds
+#define CONNECTION_TIMEOUT 1 // Max wait time for satellite in seconds
 #define MAX_PRIORITY 5     // Higher number means higher priority
 #define MIN_WORK_TIME 1    // Min time engineer takes to handle request
 #define MAX_WORK_TIME 3    // Max time engineer takes to handle request
-#define SATELLITE_ARRIVAL_DELAY_MS 500 // Milliseconds between satellite arrivals (simulated)
+#define SATELLITE_ARRIVAL_DELAY_MS 0 // Milliseconds between satellite arrivals (simulated)
 
 // --- Data Structures ---
 
@@ -175,24 +175,6 @@ void* satellite_thread_func(void* arg) {
         if (!request->handled) {
              printf("[TIMEOUT] Satellite %d timeout %d second.\n", id, CONNECTION_TIMEOUT);
              request->handled = true; // Mark as 'done' (via timeout) to prevent engineer pickup
-
-             // Attempt to remove from queue *if it's still there*
-             SatelliteRequest* current = requestQueue;
-             SatelliteRequest* prev = NULL;
-             while(current != NULL) {
-                 if (current == request) { // Compare pointers
-                     if (prev == NULL) { // It's the head
-                         requestQueue = current->next;
-                     } else {
-                         prev->next = current->next;
-                     }
-                     break;
-                 }
-                 prev = current;
-                 current = current->next;
-             }
-             // If found_in_queue is false, it means an engineer grabbed it *just* before
-             // the satellite timed out and locked the mutex. That's okay.
         }
         pthread_mutex_unlock(&engineerMutex);
     } else {
