@@ -9,9 +9,9 @@
 
 // --- Configuration ---
 #define NUM_ENGINEERS 3
-#define NUM_SATELLITES 50            
-#define CONNECTION_TIMEOUT 1         // Max wait time for satellite in seconds
-#define MAX_PRIORITY 5               
+#define NUM_SATELLITES 5
+#define CONNECTION_TIMEOUT 5 // Max wait time for satellite in seconds
+#define MAX_PRIORITY 5
 #define MIN_WORK_TIME 1              // Min time engineer takes to handle request
 #define MAX_WORK_TIME 3              // Max time engineer takes to handle request
 #define SATELLITE_ARRIVAL_DELAY_MS 0 // Milliseconds between satellite arrivals (simulated)
@@ -38,11 +38,13 @@ typedef struct
 SatelliteRequest *requestQueue = NULL; // Head of the linked list (priority queue)
 pthread_mutex_t engineerMutex;
 sem_t newRequest; // Semaphore to signal engineers about new requests
+sem_t requestHandled;
 
 // --- Global State ---
 volatile bool all_satellites_launched = false;
-volatile int active_satellites = 0;      // Counter for satellites still running/waiting
-pthread_mutex_t active_satellites_mutex; // Mutex for the active_satellites counter
+volatile int active_satellites = 0;             // Counter for satellites still running/waiting
+pthread_mutex_t active_satellites_mutex;        // Mutex for the active_satellites counter
+volatile int availableEnginers = NUM_ENGINEERS; // Number of engineers available
 
 // --- Function Prototypes ---
 void *satellite_thread_func(void *arg);
@@ -289,10 +291,15 @@ void *engineer_thread_func(void *arg)
 
         if (req_to_handle != NULL)
         {
+            pthread_mutex_lock(&engineerMutex); // Lock again for processing
+            availableEnginers--;                // Mark engineer as busy
+            pthread_mutex_unlock(&engineerMutex);
+
             // Handle the request
             printf("[ENGINEER %d] Handling Satellite %d (Priority %d)\n", id, req_to_handle->id, req_to_handle->priority);
 
             // Signal the satellite that its request is being handled
+            sem_post(&requestHandled);
             sem_post(&req_to_handle->request_handled_sem);
 
             // Simulate work
@@ -306,6 +313,7 @@ void *engineer_thread_func(void *arg)
 
             // Make engineer available again
             pthread_mutex_lock(&engineerMutex);
+            availableEnginers++;
             pthread_mutex_unlock(&engineerMutex);
         }
         else if (should_shutdown)
@@ -346,6 +354,14 @@ int main()
         perror("Semaphore init failed");
         pthread_mutex_destroy(&engineerMutex);
         pthread_mutex_destroy(&active_satellites_mutex);
+        return 1;
+    }
+    if (sem_init(&requestHandled, 0, 0) != 0)
+    {
+        perror("Semaphore requestHandled init failed");
+        pthread_mutex_destroy(&engineerMutex);
+        pthread_mutex_destroy(&active_satellites_mutex);
+        sem_destroy(&newRequest);
         return 1;
     }
 
@@ -431,13 +447,13 @@ int main()
     {
         fprintf(stderr, "Warning: Request queue not empty at exit.\n");
         // Optional: Clean up remaining requests (memory leak otherwise)
-        SatelliteRequest *current = requestQueue;
-        while (current != NULL)
+        SatelliteRequest *cur = requestQueue;
+        while (cur != NULL)
         {
-            SatelliteRequest *next = current->next;
+            SatelliteRequest *next = cur->next;
             // Semaphores inside requests were destroyed by satellites or should have been.
-            free(current);
-            current = next;
+            free(cur);
+            cur = next;
         }
     }
 
