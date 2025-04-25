@@ -4,21 +4,18 @@
 #include <semaphore.h>
 #include <unistd.h>
 #include <time.h>
-#include <errno.h>   // Required for ETIMEDOUT
-#include <stdbool.h> // For bool type
+#include <errno.h>
+#include <stdbool.h>
 
 // --- Configuration ---
 #define NUM_ENGINEERS 3
-#define NUM_SATELLITES 50            // As per example scenario
+#define NUM_SATELLITES 50            
 #define CONNECTION_TIMEOUT 1         // Max wait time for satellite in seconds
-#define MAX_PRIORITY 5               // Higher number means higher priority
+#define MAX_PRIORITY 5               
 #define MIN_WORK_TIME 1              // Min time engineer takes to handle request
 #define MAX_WORK_TIME 3              // Max time engineer takes to handle request
 #define SATELLITE_ARRIVAL_DELAY_MS 0 // Milliseconds between satellite arrivals (simulated)
 
-// --- Data Structures ---
-
-// Structure to hold satellite request info
 typedef struct SatelliteRequest
 {
     int id;
@@ -216,21 +213,6 @@ void *satellite_thread_func(void *arg)
 
     // Cleanup satellite-specific semaphore
     sem_destroy(&request->request_handled_sem);
-
-    // If the request timed out and wasn't removed from the queue above
-    // because an engineer picked it just in time, the engineer will free it.
-    // If it timed out and *was* removed above, we free it here.
-    // If it was handled normally, the engineer will free it.
-    // To avoid double-free, only free if it timed out AND was removed from the queue here.
-    // Simplified approach: Let the engineer *always* free the request struct after handling.
-    // The satellite just manages its own lifecycle. If it times out *and* manages to remove
-    // itself from the queue, it needs to free the struct.
-    // Let's make the engineer responsible for freeing the request struct memory
-    // after it processes it OR if it finds a request marked as 'handled' (timed out)
-    // during its queue check (though unlikely with current logic).
-    // Safest: Satellite only frees if timeout occurred AND it successfully removed itself.
-    // This seems overly complex. Let's stick to: Engineer frees the request memory.
-    // The satellite just needs to destroy its semaphore.
 
     pthread_mutex_lock(&active_satellites_mutex);
     active_satellites--;
