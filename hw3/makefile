@@ -16,7 +16,7 @@ clean:
 memcheck: $(TARGET)
 	valgrind --leak-check=full --show-leak-kinds=all ./$(TARGET)
 
-hilgrind: $(TARGET)
+helgrind: $(TARGET)
 	valgrind --tool=helgrind --trace-children=yes ./$(TARGET)
 
 .PHONY: clean run memcheck
