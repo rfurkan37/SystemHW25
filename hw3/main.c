@@ -8,13 +8,13 @@
 #include <stdbool.h>
 
 // --- Settings for the Simulation ---
-#define NUM_ENGINEERS 5              // How many engineers we have
-#define NUM_SATELLITES 25            // How many satellites will connect
-#define CONNECTION_TIMEOUT 5         // Max time (seconds) a satellite waits for an engineer
-#define MAX_PRIORITY 5               // Highest priority number (1 is best, 5 is lowest)
-#define MIN_WORK_TIME 1              // Shortest time an engineer takes (seconds)
-#define MAX_WORK_TIME 1              // Longest time an engineer takes (seconds)
-#define SATELLITE_ARRIVAL_DELAY_MS 0 // Small delay between satellite starts (milliseconds)
+#define NUM_ENGINEERS 5                // How many engineers we have
+#define NUM_SATELLITES 3               // How many satellites will connect
+#define CONNECTION_TIMEOUT 5           // Max time (seconds) a satellite waits for an engineer
+#define MAX_PRIORITY 5                 // Highest priority number (1 is best, 5 is lowest)
+#define MIN_WORK_TIME 1                // Shortest time an engineer takes (seconds)
+#define MAX_WORK_TIME 3                // Longest time an engineer takes (seconds)
+#define SATELLITE_ARRIVAL_DELAY_MS 200 // Small delay between satellite starts (milliseconds)
 
 // Structure to hold satellite request details
 typedef struct SatelliteRequest
