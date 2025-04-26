@@ -7,273 +7,331 @@
 #include <errno.h>
 #include <stdbool.h>
 
-// --- Configuration ---
-#define NUM_ENGINEERS 1 // The constraint
-#define NUM_SATELLITES 5
-#define CONNECTION_TIMEOUT 5 // Moderate timeout
-#define MAX_PRIORITY 5
-#define MIN_WORK_TIME 2     // Engineer takes noticeable time
-#define MAX_WORK_TIME 3
-#define SATELLITE_ARRIVAL_DELAY_MS 100 // Stagger arrivals slightly// Milliseconds between satellite arrivals
+// --- Settings for the Simulation ---
+#define NUM_ENGINEERS 5              // How many engineers we have
+#define NUM_SATELLITES 25            // How many satellites will connect
+#define CONNECTION_TIMEOUT 5         // Max time (seconds) a satellite waits for an engineer
+#define MAX_PRIORITY 5               // Highest priority number (1 is best, 5 is lowest)
+#define MIN_WORK_TIME 1              // Shortest time an engineer takes (seconds)
+#define MAX_WORK_TIME 1              // Longest time an engineer takes (seconds)
+#define SATELLITE_ARRIVAL_DELAY_MS 0 // Small delay between satellite starts (milliseconds)
 
+// Structure to hold satellite request details
 typedef struct SatelliteRequest
 {
-    int id;
-    int priority; // Lower number = higher priority
-    // Removed per-satellite semaphore: sem_t request_handled_sem;
-    time_t request_time;              // Time the request was made (for info)
-    struct timespec timeout_deadline; // Absolute time for timeout
-    bool handled;                     // Flag to indicate if handled or timed out
-    struct SatelliteRequest *next;    // For linked list implementation
+    int id;                          // Which satellite is this?
+    int priority;                    // Its priority level (lower number = more important)
+    time_t requestTime;              // When did it ask for help? (Just for info)
+    struct timespec timeoutDeadline; // Absolute time when the satellite gives up
+    bool handled;                    // Did an engineer pick this up or did it time out?
+    struct SatelliteRequest *next;   // Pointer for making a linked list (our queue)
 } SatelliteRequest;
 
-// Structure for passing data to satellite threads
+// Simple struct to pass satellite ID and priority to its thread
 typedef struct
 {
     int id;
     int priority;
 } SatelliteThreadData;
 
-// --- Shared Resources ---
-SatelliteRequest *requestQueue = NULL; // Head of the linked list (priority queue)
-pthread_mutex_t engineerMutex;         // Protects requestQueue and availableEngineers
-sem_t newRequest;                      // Signaled by satellites
-sem_t requestHandled;                  // Signaled by engineers (GLOBAL)
+// --- Shared Stuff ---
+SatelliteRequest *requestQueue = NULL; // The list where waiting satellites go (starts empty)
+pthread_mutex_t engineerMutex;         // Lock to protect the requestQueue and availableEngineers count
+sem_t newRequest;                      // Semaphore: Satellites signal when they add a request
+sem_t requestHandled;                  // Semaphore: Engineers signal after taking a request
 
-// --- Global State ---
-volatile int active_satellites = 0;              // Counter for satellites still running/waiting
-volatile int availableEngineers = NUM_ENGINEERS; // Number of engineers available
-volatile bool all_satellites_launched = false;
-pthread_mutex_t active_satellites_mutex;         // Mutex for the active_satellites counter
+// --- Global Variables ---
+volatile int availableEngineers = NUM_ENGINEERS; // How many engineers are free right now
+volatile int activeSatellites = 0;               // How many satellite threads are still running/waiting
+volatile bool allSatellitesLaunched = false;     // Flag to help engineers know when to stop
+pthread_mutex_t activeSatellitesMutex;           // Lock for the activeSatellites counter
 
-// --- Function Prototypes ---
-void *satellite_thread_func(void *arg);
-void *engineer_thread_func(void *arg);
-void add_request_to_queue(SatelliteRequest *new_req);
-SatelliteRequest *find_and_remove_highest_priority_request(); // Finds lowest number
-void timespec_add_seconds(struct timespec *ts, int seconds);
-long timespec_diff_ms(struct timespec start, struct timespec end); // Helper for recalculating timeout (optional but good)
+// --- Function Declarations ---
+void *satellite(void *arg);
+void *engineer(void *arg);
+void addRequestToQueue(SatelliteRequest *newReq);          // Puts a new request into the list
+SatelliteRequest *findAndRemoveHighestPriority();          // Gets the most important request from the list
+void timespecAddSeconds(struct timespec *ts, int seconds); // Helper for timeouts
 
 // --- Helper Functions ---
 
-void timespec_add_seconds(struct timespec *ts, int seconds)
+// Adds seconds to a timespec struct (for calculating timeout deadline)
+void timespecAddSeconds(struct timespec *ts, int seconds)
 {
     ts->tv_sec += seconds;
-    if (ts->tv_nsec >= 1000000000L)
-    {
-        ts->tv_sec++;
-        ts->tv_nsec -= 1000000000L;
-    }
 }
 
-// Calculate difference between two timespecs in milliseconds
-long timespec_diff_ms(struct timespec start, struct timespec end)
+// Adds a new satellite request to the front of the queue list
+void addRequestToQueue(SatelliteRequest *newReq)
 {
-    return (end.tv_sec - start.tv_sec) * 1000L + (end.tv_nsec - start.tv_nsec) / 1000000L;
+    newReq->next = requestQueue; // Point the new request to the current start of the list
+    requestQueue = newReq;       // Make the new request the new start of the list
 }
 
-void add_request_to_queue(SatelliteRequest *new_req)
-{
-    new_req->next = requestQueue;
-    requestQueue = new_req;
-}
-
-// Find the request with the highest priority (lowest number), remove it, and return it
-SatelliteRequest *find_and_remove_highest_priority_request()
+// Find the request with the highest priority (lowest number), remove it from the list, and return it
+SatelliteRequest *findAndRemoveHighestPriority()
 {
     if (requestQueue == NULL)
+    { // Check if the queue is empty
         return NULL;
+    }
 
-    SatelliteRequest *highest_priority_req = requestQueue;
-    SatelliteRequest *prev_req = NULL;
-    SatelliteRequest *current_req = requestQueue;
-    SatelliteRequest *prev_for_highest = NULL;
+    // Assume the first node is the highest priority initially
+    SatelliteRequest *highestPriorityReq = requestQueue;
+    SatelliteRequest *prevForHighest = NULL; // Will store the node *before* the highest priority one
 
-    while (current_req != NULL)
+    // Start iterating from the second node
+    SatelliteRequest *currentPrev = requestQueue;      // Node before currentReq
+    SatelliteRequest *currentReq = requestQueue->next; // Node being checked
+
+    while (currentReq != NULL)
     {
-        // LOWER number = higher priority
-        if (current_req->priority < highest_priority_req->priority)
+        // Check if the current node has higher priority (lower number)
+        if (currentReq->priority < highestPriorityReq->priority)
         {
-            highest_priority_req = current_req;
-            prev_for_highest = prev_req;
+            // Found a new highest priority node
+            highestPriorityReq = currentReq;
+            // Record the node that comes *before* this new highest priority node
+            prevForHighest = currentPrev;
         }
-        prev_req = current_req;
-        current_req = current_req->next;
+        // Move to the next node
+        currentPrev = currentReq;
+        currentReq = currentReq->next;
     }
 
-    if (highest_priority_req == requestQueue)
+    // Now, remove the highest priority node from the linked list
+    if (highestPriorityReq == requestQueue)
     {
-        requestQueue = highest_priority_req->next;
-    }
-    else if (prev_for_highest != NULL)
-    {
-        prev_for_highest->next = highest_priority_req->next;
+        // The highest priority node was the first one in the list
+        requestQueue = highestPriorityReq->next; // Update the head of the list
     }
     else
     {
-        fprintf(stderr, "Error: Logic error in finding highest priority request.\n");
-        return NULL;
+        // The highest priority node was somewhere in the middle or end.
+        // 'prevForHighest' should point to the node right before it.
+        if (prevForHighest != NULL)
+        {
+            // Make the previous node skip over the highest priority node
+            prevForHighest->next = highestPriorityReq->next;
+        }
+        else
+        {
+            // This case should logically be impossible if highestPriorityReq wasn't the head.
+            // Indicates a potential issue if it ever occurs.
+            fprintf(stderr, "Critical Logic Error: prevForHighest is NULL but node is not head during removal.\n");
+            // Avoid modifying the list in an unknown state
+            return NULL; // Indicate failure
+        }
     }
 
-    highest_priority_req->next = NULL;
-    return highest_priority_req;
+    highestPriorityReq->next = NULL; // Detach the removed node from the list completely
+    return highestPriorityReq;       // Return the node we found and removed
 }
 
 // --- Thread Functions ---
 
-void *satellite_thread_func(void *arg)
+// Function run by each satellite thread
+void *satellite(void *arg)
 {
+    // Get satellite info passed from main
     SatelliteThreadData *data = (SatelliteThreadData *)arg;
     int id = data->id;
     int priority = data->priority;
-    free(arg);
+    free(arg); // Don't need the data struct anymore
 
-    pthread_mutex_lock(&active_satellites_mutex);
-    active_satellites++;
-    pthread_mutex_unlock(&active_satellites_mutex);
+    // Increment count of active satellites (using mutex for safety)
+    pthread_mutex_lock(&activeSatellitesMutex);
+    activeSatellites++;
+    pthread_mutex_unlock(&activeSatellitesMutex);
 
+    // Create the request structure for this satellite
     SatelliteRequest *request = (SatelliteRequest *)malloc(sizeof(SatelliteRequest));
-    if (!request)
+    if (!request) // Check if malloc failed
     {
         perror("Failed to allocate memory for satellite request");
-        pthread_mutex_lock(&active_satellites_mutex);
-        active_satellites--;
-        pthread_mutex_unlock(&active_satellites_mutex);
+        // Need to decrement active count if we fail here
+        pthread_mutex_lock(&activeSatellitesMutex);
+        activeSatellites--;
+        pthread_mutex_unlock(&activeSatellitesMutex);
         return NULL;
     }
 
+    // Fill in request details
     request->id = id;
     request->priority = priority;
-    request->request_time = time(NULL);
-    request->handled = false;
-    request->next = NULL;
-    // No per-satellite semaphore initialization needed
+    request->requestTime = time(NULL); // Record current time
+    request->handled = false;          // Not handled yet
+    request->next = NULL;              // Not in the list yet
 
-    clock_gettime(CLOCK_REALTIME, &request->timeout_deadline);
-    timespec_add_seconds(&request->timeout_deadline, CONNECTION_TIMEOUT);
+    // Calculate when this satellite's connection window closes
+    clock_gettime(CLOCK_REALTIME, &request->timeoutDeadline);          // Get current time
+    timespecAddSeconds(&request->timeoutDeadline, CONNECTION_TIMEOUT); // Add timeout duration
 
+    // Add the request to the shared queue (needs protection with mutex)
     pthread_mutex_lock(&engineerMutex);
     printf("[SATELLITE] Satellite %d requesting (priority %d)\n", id, priority);
-    add_request_to_queue(request);
+    addRequestToQueue(request);
     pthread_mutex_unlock(&engineerMutex);
 
+    // Signal using the semaphore that there's a new request waiting
     sem_post(&newRequest);
 
-    bool satellite_completed = false;
-    bool successfully_handled = false;
-    while (!successfully_handled)
+    // Now wait: either an engineer signals, or we time out
+    int waitResult;
+    bool timedOut = false;
+
+    // Keep trying sem_timedwait until it succeeds, times out, or gives a real error
+    while (true)
     {
-        int wait_result;
-        // Wait on the GLOBAL requestHandled semaphore until the absolute deadline
-        wait_result = sem_timedwait(&requestHandled, &request->timeout_deadline);
+        // Wait on the 'requestHandled' semaphore until the deadline
+        waitResult = sem_timedwait(&requestHandled, &request->timeoutDeadline);
 
-        if(wait_result == 0)
+        if (waitResult == 0)
         {
-            pthread_mutex_lock(&engineerMutex);
-
-            successfully_handled = true;
-            satellite_completed = true;
-
-            pthread_mutex_unlock(&engineerMutex);
+            // Got signaled by an engineer! Assume our request is being handled (or will be soon).
+            // The global semaphore makes it slightly ambiguous, but this is the simple way.
+            break; // Exit the waiting loop
         }
         else if (errno == ETIMEDOUT)
         {
-            // Timeout occurred
-            pthread_mutex_lock(&engineerMutex);
-            
-            if
+            // We waited too long, the deadline passed.
+            timedOut = true;
+            break; // Exit the waiting loop
         }
         else if (errno == EINTR)
         {
-            // Interrupted by signal, retry
+            // Interrupted by OS signal, just try waiting again
             continue;
         }
         else
         {
-            perror("sem_timedwait failed");
-            break;
+            // Some other semaphore error occurred
+            perror("sem_timedwait failed for satellite");
+            timedOut = true; // Treat as a failure for this satellite
+            break;           // Exit the waiting loop
         }
-    } // end while(!was_handled_or_timed_out)
+    }
 
-    // Cleanup: The engineer is responsible for freeing the request struct memory
-    // if it handles it. If it timed out, the engineer *might* still find it
-    // later, see handled=true, and free it. The satellite itself should NOT free the request struct.
+    // Check if we timed out
+    if (timedOut)
+    {
+        printf("[TIMEOUT] Satellite %d timed out after %d seconds.\n", id, CONNECTION_TIMEOUT);
+        // If we timed out, try to find our request in the queue and mark it 'handled'.
+        // This tells the engineer to ignore it if they find it later.
+        pthread_mutex_lock(&engineerMutex);
+        SatelliteRequest *curr = requestQueue;
+        while (curr != NULL)
+        {
+            // Check if this node is the exact one we created (compare memory address)
+            if (curr == request)
+            {
+                curr->handled = true; // Mark it so engineer knows it's stale
+                break;                // Found it, stop searching
+            }
+            curr = curr->next;
+        }
+        // If curr is NULL, the engineer must have grabbed it right between our timeout and locking the mutex. That's fine.
+        pthread_mutex_unlock(&engineerMutex);
+    }
+    // If not timed out, we assume an engineer handled it (or is about to). The engineer prints the completion message.
 
-    pthread_mutex_lock(&active_satellites_mutex);
-    active_satellites--;
-    pthread_mutex_unlock(&active_satellites_mutex);
+    // Satellite thread is finishing (either handled or timed out)
+    // Decrement the active satellite count (use mutex)
+    pthread_mutex_lock(&activeSatellitesMutex);
+    activeSatellites--;
+    pthread_mutex_unlock(&activeSatellitesMutex);
 
+    // VERY IMPORTANT: The satellite does *not* free the 'request' memory here.
+    // The engineer is responsible for freeing it when they handle or discard it.
     return NULL;
 }
 
-void *engineer_thread_func(void *arg)
+// Function run by each engineer thread
+void *engineer(void *arg)
 {
+    // Get engineer ID passed from main
     int id = *(int *)arg;
-    free(arg);
+    free(arg); // Free the memory used to pass the ID
 
+    // Engineers keep working until explicitly told to stop
     while (true)
     {
-        int sem_status;
+        // Wait for the 'newRequest' semaphore. This blocks until a satellite signals.
+        int semStatus;
         do
         {
-            sem_status = sem_wait(&newRequest);
-        } while (sem_status == -1 && errno == EINTR);
+            semStatus = sem_wait(&newRequest); // Wait indefinitely
+        } while (semStatus == -1 && errno == EINTR); // Retry if interrupted by OS
 
-        if (sem_status == -1)
+        if (semStatus == -1)
         {
+            // If sem_wait fails for real, something's wrong
             perror("Engineer sem_wait failed");
-            break;
+            break; // Exit the loop/thread
         }
 
-        SatelliteRequest *req_to_handle = NULL;
-        bool should_shutdown = false;
+        // Woken up! Let's check for work or if it's time to shut down.
+        SatelliteRequest *reqToHandle = NULL;
+        bool shouldShutdown = false;
 
+        // Lock the mutex to safely access shared queue and state
         pthread_mutex_lock(&engineerMutex);
 
-        pthread_mutex_lock(&active_satellites_mutex);
-        should_shutdown = all_satellites_launched && active_satellites == 0 && requestQueue == NULL;
-        pthread_mutex_unlock(&active_satellites_mutex);
+        // --- Check if we should shut down ---
+        // Need to lock the other mutex briefly to check activeSatellites count
+        pthread_mutex_lock(&activeSatellitesMutex);
+        // Condition: All satellites created, no satellites running, queue is empty
+        shouldShutdown = allSatellitesLaunched && activeSatellites == 0 && requestQueue == NULL;
+        pthread_mutex_unlock(&activeSatellitesMutex);
 
-        if (should_shutdown)
+        if (shouldShutdown)
         {
-            pthread_mutex_unlock(&engineerMutex);
-            break;
+            pthread_mutex_unlock(&engineerMutex); // Unlock before breaking
+            break;                                // Time to exit the engineer's main loop
         }
 
-        req_to_handle = find_and_remove_highest_priority_request();
+        // --- If not shutting down, try to get a request ---
+        // Find and remove the highest priority request from the queue
+        reqToHandle = findAndRemoveHighestPriority();
 
-        if (req_to_handle != NULL)
+        if (reqToHandle != NULL)
         {
-            if (req_to_handle->handled)
+            // We got a request! Now check if it timed out before we got it.
+            if (reqToHandle->handled)
             {
-                // Request timed out before we could remove it. Satellite marked it. Free memory.
-                pthread_mutex_unlock(&engineerMutex);
-                free(req_to_handle);
-                req_to_handle = NULL;
+                // The 'handled' flag was already true, meaning the satellite timed out and marked it.
+                // We should just discard it.
+                pthread_mutex_unlock(&engineerMutex); // Unlock mutex *before* freeing memory
+                free(reqToHandle);                    // Free the timed-out request struct
+                reqToHandle = NULL;
+                // Don't signal requestHandled semaphore, as we didn't really handle it.
+                // Don't change availableEngineers count either.
+                continue; // Go back to wait for another newRequest signal
             }
             else
             {
-                // We got a valid request. Mark handled, claim engineer.
-                req_to_handle->handled = true;
-                availableEngineers--;
-                pthread_mutex_unlock(&engineerMutex); // Unlock before work/signal
+                // This is a valid request we need to process!
+                availableEngineers--;                 // Mark this engineer as busy
+                reqToHandle->handled = true;          // Mark request as being handled now
+                pthread_mutex_unlock(&engineerMutex); // *** Unlock mutex BEFORE signaling and doing work ***
 
-                // --- Handle the request ---
-                printf("[ENGINEER %d] Handling Satellite %d (Priority %d)\n", id, req_to_handle->id, req_to_handle->priority);
+                // --- Process the satellite request ---
+                printf("[ENGINEER %d] Handling Satellite %d (Priority %d)\n", id, reqToHandle->id, reqToHandle->priority);
 
-                // Signal the GLOBAL semaphore that *a* request was handled
-                sem_post(&requestHandled); // Strictly adhering to PDF
+                // Signal the 'requestHandled' semaphore - lets waiting satellites know *someone* took a task
+                sem_post(&requestHandled);
 
-                // Simulate work
-                int work_time = (rand() % (MAX_WORK_TIME - MIN_WORK_TIME + 1)) + MIN_WORK_TIME;
-                sleep(work_time);
+                // Simulate doing the update work
+                int workTime = (rand() % (MAX_WORK_TIME - MIN_WORK_TIME + 1)) + MIN_WORK_TIME;
+                sleep(workTime); // Pause for the simulated work duration
 
-                printf("[ENGINEER %d] Finished Satellite %d\n", id, req_to_handle->id);
+                printf("[ENGINEER %d] Finished Satellite %d\n", id, reqToHandle->id);
 
-                // Free the request memory
-                free(req_to_handle);
+                // Free the memory used by the request struct now that we're done
+                free(reqToHandle);
+                reqToHandle = NULL;
 
-                // Release engineer
+                // Mark this engineer as available again (needs mutex protection)
                 pthread_mutex_lock(&engineerMutex);
                 availableEngineers++;
                 pthread_mutex_unlock(&engineerMutex);
@@ -281,54 +339,59 @@ void *engineer_thread_func(void *arg)
         }
         else
         {
-            // No request found or spurious wakeup for engineer? Or shutdown?
-            pthread_mutex_unlock(&engineerMutex);
-            // Optional: Add brief sleep here if spurious wakeups are very frequent
-            // Check shutdown again more thoroughly if needed
-            pthread_mutex_lock(&active_satellites_mutex);
-            should_shutdown = all_satellites_launched && active_satellites == 0;
-            pthread_mutex_unlock(&active_satellites_mutex);
-            if (should_shutdown)
+            // If reqToHandle is NULL, the queue was empty when we checked.
+            // This might happen if another engineer grabbed the request between sem_wait
+            // waking us and us locking the mutex (a "spurious" wakeup for us).
+            pthread_mutex_unlock(&engineerMutex); // Unlock mutex
+
+            // Briefly re-check shutdown condition here too, just in case.
+            pthread_mutex_lock(&activeSatellitesMutex);
+            shouldShutdown = allSatellitesLaunched && activeSatellites == 0;
+            pthread_mutex_unlock(&activeSatellitesMutex);
+            if (shouldShutdown)
             {
                 pthread_mutex_lock(&engineerMutex);
                 if (requestQueue == NULL)
-                {
+                { // Double check queue is still empty
                     pthread_mutex_unlock(&engineerMutex);
-                    break;
+                    break; // Exit loop
                 }
                 pthread_mutex_unlock(&engineerMutex);
             }
+            // Otherwise, just loop back and wait on sem_wait(&newRequest) again.
         }
-    } // End while(true)
+    } // End of main engineer loop (while(true))
 
     printf("[ENGINEER %d] Exiting...\n", id);
     return NULL;
 }
 
-// --- Main Function ---
+// --- Main Program ---
 int main()
 {
-    pthread_t engineer_threads[NUM_ENGINEERS];
-    pthread_t satellite_threads[NUM_SATELLITES];
+    pthread_t engineerThreads[NUM_ENGINEERS];   // Array to hold engineer thread IDs
+    pthread_t satelliteThreads[NUM_SATELLITES]; // Array to hold satellite thread IDs
 
-    srand(time(NULL));
+    srand(time(NULL)); // Initialize random numbers (for priorities and work times)
 
+    // --- Set up Mutexes and Semaphores ---
     if (pthread_mutex_init(&engineerMutex, NULL) != 0)
     {
         perror("Mutex engineerMutex init failed");
         return 1;
     }
-    if (pthread_mutex_init(&active_satellites_mutex, NULL) != 0)
+    if (pthread_mutex_init(&activeSatellitesMutex, NULL) != 0)
     {
-        perror("Mutex active_satellites_mutex init failed");
+        perror("Mutex activeSatellitesMutex init failed");
         pthread_mutex_destroy(&engineerMutex);
         return 1;
     }
+    // Initialize semaphores: 0 means they block initially
     if (sem_init(&newRequest, 0, 0) != 0)
-    {
+    { // 0 = shared between threads in this process
         perror("Semaphore newRequest init failed");
         pthread_mutex_destroy(&engineerMutex);
-        pthread_mutex_destroy(&active_satellites_mutex);
+        pthread_mutex_destroy(&activeSatellitesMutex);
         return 1;
     }
     if (sem_init(&requestHandled, 0, 0) != 0)
@@ -336,83 +399,101 @@ int main()
         perror("Semaphore requestHandled init failed");
         sem_destroy(&newRequest);
         pthread_mutex_destroy(&engineerMutex);
-        pthread_mutex_destroy(&active_satellites_mutex);
+        pthread_mutex_destroy(&activeSatellitesMutex);
         return 1;
     }
 
     printf("Starting ground station simulation with %d engineers and %d satellites.\n", NUM_ENGINEERS, NUM_SATELLITES);
-    printf("Satellite timeout window: %d seconds. Lower priority number = higher priority.\n", CONNECTION_TIMEOUT);
+    printf("Satellite timeout window: %d seconds. Work time: %d-%d sec. Lower priority number = higher priority.\n",
+           CONNECTION_TIMEOUT, MIN_WORK_TIME, MAX_WORK_TIME);
 
+    // --- Start the Engineer Threads ---
     for (int i = 0; i < NUM_ENGINEERS; i++)
     {
-        int *id_ptr = malloc(sizeof(int));
+        // Need to pass the engineer's ID to the thread function
+        int *id_ptr = malloc(sizeof(int)); // Allocate memory for the ID
         if (!id_ptr)
         {
-            perror("Failed to allocate memory for engineer ID"); /* Add cleanup */
+            perror("Failed to allocate memory for engineer ID"); /* TODO: Add cleanup for already created threads/semaphores */
             return 1;
         }
-        *id_ptr = i;
-        if (pthread_create(&engineer_threads[i], NULL, engineer_thread_func, id_ptr) != 0)
+        *id_ptr = i; // Store the ID
+        if (pthread_create(&engineerThreads[i], NULL, engineer, id_ptr) != 0)
         {
             perror("Failed to create engineer thread");
-            free(id_ptr); /* Add cleanup */
+            free(id_ptr); /* TODO: Add cleanup */
             return 1;
         }
     }
 
+    // --- Start the Satellite Threads ---
     for (int i = 0; i < NUM_SATELLITES; i++)
     {
+        // Create data struct to pass ID and priority
         SatelliteThreadData *data = (SatelliteThreadData *)malloc(sizeof(SatelliteThreadData));
         if (!data)
         {
-            perror("Failed to allocate memory for satellite data"); /* Add cleanup */
+            perror("Failed to allocate memory for satellite data"); /* TODO: Add cleanup */
             return 1;
         }
-        data->id = i;
-        data->priority = (rand() % MAX_PRIORITY) + 1; // Priority 1 (highest) to MAX_PRIORITY (lowest)
+        data->id = i;                                 // Assign satellite ID
+        data->priority = (rand() % MAX_PRIORITY) + 1; // Assign random priority (1 to MAX_PRIORITY)
 
-        if (pthread_create(&satellite_threads[i], NULL, satellite_thread_func, data) != 0)
+        if (pthread_create(&satelliteThreads[i], NULL, satellite, data) != 0)
         {
             perror("Failed to create satellite thread");
-            free(data); /* Add cleanup */
+            free(data); /* TODO: Add cleanup */
             return 1;
         }
+        // Add a small delay between starting satellites to make the output less simultaneous
         if (SATELLITE_ARRIVAL_DELAY_MS > 0)
         {
-            usleep(SATELLITE_ARRIVAL_DELAY_MS * 1000);
+            usleep(SATELLITE_ARRIVAL_DELAY_MS * 1000); // usleep takes microseconds
         }
     }
 
-    pthread_mutex_lock(&active_satellites_mutex);
-    all_satellites_launched = true;
-    pthread_mutex_unlock(&active_satellites_mutex);
+    // --- All threads launched ---
+    // Set the flag so engineers know no more satellites are coming
+    pthread_mutex_lock(&activeSatellitesMutex);
+    allSatellitesLaunched = true;
+    pthread_mutex_unlock(&activeSatellitesMutex);
 
     printf("All satellite threads created and requesting...\n");
 
+    // --- Wait for all Satellite Threads to finish ---
+    // Main thread waits here until each satellite thread completes (either handled or timed out)
     for (int i = 0; i < NUM_SATELLITES; i++)
     {
-        pthread_join(satellite_threads[i], NULL);
+        pthread_join(satelliteThreads[i], NULL); // Wait for thread i to finish
     }
-    printf("All satellite threads have finished.\n");
+    printf("All satellite threads have finished (handled or timed out).\n");
 
-    // Wake up engineers for final shutdown check
+    // --- Tell Engineers to Check for Shutdown ---
+    // Since satellites might finish without new requests coming in,
+    // engineers might be stuck waiting on sem_wait(&newRequest).
+    // We post the semaphore enough times to wake them all up so they can check the shutdown condition.
+    printf("Signaling engineers for final shutdown check...\n");
     for (int i = 0; i < NUM_ENGINEERS; i++)
     {
         sem_post(&newRequest);
     }
 
+    // --- Wait for all Engineer Threads to finish ---
+    // Main thread waits here until each engineer thread exits its loop
     for (int i = 0; i < NUM_ENGINEERS; i++)
     {
-        pthread_join(engineer_threads[i], NULL);
+        pthread_join(engineerThreads[i], NULL); // Wait for engineer i to finish
     }
     printf("All engineer threads have exited.\n");
 
-    // Cleanup
+    // --- Clean up Resources ---
     pthread_mutex_destroy(&engineerMutex);
-    pthread_mutex_destroy(&active_satellites_mutex);
+    pthread_mutex_destroy(&activeSatellitesMutex);
     sem_destroy(&newRequest);
-    sem_destroy(&requestHandled); // Destroy the global semaphore
+    sem_destroy(&requestHandled);
 
+    // Final check: Was the request queue properly emptied?
+    // If not, it might indicate a logic error or memory leak.
     if (requestQueue != NULL)
     {
         fprintf(stderr, "Warning: Request queue not empty at exit. Cleaning up...\n");
@@ -420,12 +501,12 @@ int main()
         while (cur != NULL)
         {
             SatelliteRequest *next = cur->next;
-            fprintf(stderr, " - Removing leftover request for satellite %d (priority %d)\n", cur->id, cur->priority);
-            free(cur);
+            fprintf(stderr, " - Removing leftover request for satellite %d (priority %d, handled=%d)\n", cur->id, cur->priority, cur->handled);
+            free(cur); // Free any remaining nodes
             cur = next;
         }
     }
 
     printf("Simulation finished.\n");
-    return 0;
+    return 0; // Success!
 }
