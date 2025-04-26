@@ -1,0 +1,35 @@
+#ifndef BANKSIM_COMMON_H
+#define BANKSIM_COMMON_H
+
+#include <semaphore.h>
+#include <stdint.h>
+
+#define MAX_ACCOUNTS 1024
+#define REQ_QUEUE_LEN 64
+#define SHM_NAME "/adabank_shm"
+#define SERVER_FIFO "/tmp/adabank_fifo"
+
+typedef enum { REQ_DEPOSIT = 0, REQ_WITHDRAW = 1 } req_type_t;
+
+typedef struct {
+    int client_pid;           /* originating client PID */
+    int bank_id;              /* -1 for new account */
+    req_type_t type;
+    long amount;              /* deposit / withdraw amount */
+    long result_balance;      /* balance after op (filled by server) */
+    int status;               /* -1 = pending, 0 = ok, 1 = insuff funds, 2 = err */
+} request_t;
+
+typedef struct {
+    request_t queue[REQ_QUEUE_LEN];
+    int head;
+    int tail;
+    sem_t slots;  /* empty slots */
+    sem_t items;  /* filled slots */
+    sem_t qmutex; /* protect head/tail */
+    sem_t dbmutex;/* protect account table */
+    long balances[MAX_ACCOUNTS];
+    int next_id;
+} shm_region_t;
+
+#endif /* BANKSIM_COMMON_H */
