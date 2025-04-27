@@ -4,15 +4,16 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <string.h> // For strdup, strstr
+#include <string.h> // For strdup, strstr, strncmp
 #include <errno.h>
 #include <sys/types.h> // pid_t
 #include <libgen.h>    // basename
+#include <stdbool.h>   // For bool type
 
 #include "common.h"
 
 static void usage(const char *prog)
-{ /* ... Keep implementation ... */
+{
     char *pcopy = strdup(prog);
     if (pcopy)
     {
@@ -24,8 +25,9 @@ static void usage(const char *prog)
     fprintf(stderr, "  fifo defaults to %s\n", DEFAULT_SERVER_FIFO_NAME);
     exit(1);
 }
+
 int count_commands(const char *filename)
-{ /* ... Keep implementation ... */
+{
     FILE *f = fopen(filename, "r");
     if (!f)
         return 0;
@@ -56,7 +58,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    pid_t pid = getpid();
+    pid_t pid = getpid(); // Get client's own PID
     printf("Reading %s..\n", cmdfile);
     printf("%d clients to connect.. creating clients..\n", num_commands);
 
@@ -119,7 +121,17 @@ int main(int argc, char *argv[])
 
     char line[128], resp[256];
     int line_num = 0;
-    int client_counter = 0;
+    int client_command_counter = 0;
+
+    // --- Pre-calculate expected message prefixes using client's PID ---
+    char expected_wrong_prefix[64];
+    char expected_closed_prefix[64];
+    char expected_served_prefix[64]; // For BankID_ part
+
+    snprintf(expected_wrong_prefix, sizeof(expected_wrong_prefix), "Client%d something went WRONG", pid);
+    snprintf(expected_closed_prefix, sizeof(expected_closed_prefix), "Client%d served.. account closed", pid);
+    snprintf(expected_served_prefix, sizeof(expected_served_prefix), "Client%d served.. BankID_", pid);
+
 
     while (fgets(line, sizeof(line), fp))
     {
@@ -128,77 +140,98 @@ int main(int argc, char *argv[])
         if (strlen(line) == 0 || line[0] == '#')
             continue;
 
-        client_counter++;
+        client_command_counter++;
 
         char b_id_str[64], op_str[32], am_str[32];
         sscanf(line, "%63s %31s %31s", b_id_str, op_str, am_str);
-        printf("Client%d connected..%s %s credits\n", client_counter, op_str, am_str);
+        const char *action_str = "unknown action";
+        if (strcmp(op_str, "deposit") == 0) action_str = "depositing";
+        else if (strcmp(op_str, "withdraw") == 0) action_str = "withdrawing";
+        printf("Client%d connected..%s %s credits\n", client_command_counter, action_str, am_str);
+        fflush(stdout);
 
         char write_buf[130];
         snprintf(write_buf, sizeof(write_buf), "%s\n", line);
         ssize_t write_len = strlen(write_buf);
         if (write(req_fd, write_buf, write_len) != write_len)
         {
-            if (errno == EPIPE)
-                fprintf(stderr, "Client%d: Teller closed pipe.\n", client_counter);
-            else
-                perror("Client write cmd");
+            if (errno == EPIPE) fprintf(stderr, "Client%d: Teller closed pipe.\n", client_command_counter);
+            else perror("Client write cmd");
             break;
         }
 
+        // --- Read and Parse Response ---
+        memset(resp, 0, sizeof(resp)); // Clear buffer before read
         ssize_t n = read(res_fd, resp, sizeof(resp) - 1);
         if (n > 0)
         {
-            resp[n] = '\0';
+            // Note: No need to explicitly null-terminate if buffer was cleared,
+            // but it doesn't hurt: resp[n] = '\0';
 
-            int resp_pid;
-            // REMOVED: char rest_of_message[200]; // This was unused
-            int parsed_bank_id;
+            // --- Use strncmp for parsing ---
+            bool matched = false;
 
-            if (sscanf(resp, "Client%d served.. BankID_%d\n", &resp_pid, &parsed_bank_id) == 2)
-            {
-                printf("Client%d served.. BankID_%d\n", client_counter, parsed_bank_id);
+            // 1. Check for "something went WRONG" (allow for trailing newline)
+            if (strncmp(resp, expected_wrong_prefix, strlen(expected_wrong_prefix)) == 0) {
+                printf("Client%d something went WRONG\n", client_command_counter);
+                matched = true;
             }
-            else if (sscanf(resp, "Client%d served.. account closed\n", &resp_pid) == 1)
-            {
-                printf("Client%d served.. account closed\n", client_counter);
+            // 2. Check for "account closed" (allow for trailing newline)
+            else if (strncmp(resp, expected_closed_prefix, strlen(expected_closed_prefix)) == 0) {
+                 printf("Client%d served.. account closed\n", client_command_counter);
+                 matched = true;
             }
-            else if (sscanf(resp, "Client%d something went WRONG\n", &resp_pid) == 1)
-            {
-                printf("Client%d something went WRONG\n", client_counter);
+            // 3. Check for "served.. BankID_" (allow for trailing newline and ID)
+            else if (strncmp(resp, expected_served_prefix, strlen(expected_served_prefix)) == 0) {
+                 int parsed_bank_id = -1;
+                 // Point id_ptr to where the ID number should start
+                 char *id_ptr = resp + strlen(expected_served_prefix);
+                 // Use sscanf specifically to parse the integer ID from that point
+                 if (sscanf(id_ptr, "%d", &parsed_bank_id) == 1) {
+                      printf("Client%d served.. BankID_%d\n", client_command_counter, parsed_bank_id);
+                      matched = true;
+                 } else {
+                      // Prefix matched, but couldn't parse ID number - treat as error
+                      fprintf(stderr, "Client%d Warning: Matched BankID prefix but failed to parse ID in response: [%s]\n", client_command_counter, resp);
+                      printf("Client%d something went WRONG\n", client_command_counter);
+                      matched = true; // Treat as handled error case
+                 }
             }
-            else
-            {
-                fprintf(stderr, "Client%d Warning: Unparsed response: %s", client_counter, resp);
-                printf("Client%d something went WRONG\n", client_counter);
+
+            // 4. Fallback if no specific pattern matched
+            if (!matched) {
+                // Trim potential trailing newline before printing warning
+                resp[strcspn(resp, "\n\r")] = 0;
+                fprintf(stderr, "Client%d Warning: Unparsed response format: [%s]\n", client_command_counter, resp);
+                printf("Client%d something went WRONG\n", client_command_counter); // Default to WRONG
             }
-            printf("..\n");
-            fflush(stdout);
+
+             printf("..\n"); // Print delimiter
+             fflush(stdout);
         }
         else if (n == 0)
         {
-            printf("Client (PID %d): Teller closed connection.\n", pid);
+            printf("Client (PID %d): Teller closed connection unexpectedly.\n", pid);
             break;
         }
-        else
+        else // n < 0
         {
-            if (errno == EINTR)
-            {
-                client_counter--;
+            if (errno == EINTR) {
+                client_command_counter--;
                 continue;
             }
             perror("Client read response");
             break;
         }
-    }
+    } // End while(fgets...)
 
     fclose(fp);
     close(req_fd);
     close(res_fd);
-    if (unlink(req_path) == -1 && errno != ENOENT)
-        perror("Client unlink req");
-    if (unlink(res_path) == -1 && errno != ENOENT)
-        perror("Client unlink res");
+
+    if (unlink(req_path) == -1 && errno != ENOENT) perror("Client unlink req");
+    if (unlink(res_path) == -1 && errno != ENOENT) perror("Client unlink res");
+
     printf("exiting..\n");
     return 0;
 }

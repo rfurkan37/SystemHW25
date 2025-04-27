@@ -6,8 +6,8 @@ SERVER_EXE="./bank_server"
 CLIENT_EXE="./bank_client"
 SERVER_FIFO="AdaBank" # Must match the name passed to the server
 LOG_FILE="AdaBank.bankLog" # Must match LOG_FILE_NAME in common.h
-CLIENT1_CMDS="client_01.txt"
-CLIENT2_CMDS="client_02.txt"
+CLIENT1_CMDS="Client_01.file"
+CLIENT2_CMDS="Client_02.file"
 CLIENT1_OUT="client_01.out"
 CLIENT2_OUT="client_02.out"
 
