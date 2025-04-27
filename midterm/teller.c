@@ -10,9 +10,6 @@
 #include <sys/mman.h>
 #include <poll.h>
 // Remove duplicate includes if present
-// #include <sys/types.h>
-// #include <sys/fcntl.h>
-// #include <fcntl.h>
 
 #include "common.h"
 
@@ -120,7 +117,7 @@ static void *teller_main_inner(void *arg)
     printf("Teller (%d): fdopen successful for req_fd %d.\n", getpid(), req_fd); // DEBUG
 
     // Attach to shared memory after FIFOs are confirmed open
-    shm_region_t *reg = attach_region();
+    shm_region_t *reg = attach_region(); // reg is available here
     printf("Teller (%d): Attached to shared memory.\n", getpid()); // DEBUG
 
 
@@ -158,7 +155,6 @@ static void *teller_main_inner(void *arg)
         {
              printf("Teller (%d): Loop %d: Bad format detected.\n", getpid(), command_count); // DEBUG
             dprintf(res_fd, "FAIL Protocol error: bad format '%s'\n", line);
-            fflush(fdopen(res_fd, "w")); // Ensure response sent
             continue; // Skip to next command
         }
         printf("Teller (%d): Loop %d: Parsed: ID_str='%s', op='%s', amount=%ld\n", getpid(), command_count, bank_str, op, amount); // DEBUG
@@ -172,7 +168,7 @@ static void *teller_main_inner(void *arg)
             if (*endptr != '\0' || rq.bank_id < 0 || rq.bank_id >= MAX_ACCOUNTS) {
                  printf("Teller (%d): Loop %d: Invalid BankID format (prefixed).\n", getpid(), command_count); // DEBUG
                 dprintf(res_fd, "FAIL Protocol error: invalid BankID format '%s'\n", bank_str);
-                fflush(fdopen(res_fd, "w")); continue;
+                continue;
             }
         } else {
             char *endptr;
@@ -180,7 +176,7 @@ static void *teller_main_inner(void *arg)
             if (*endptr != '\0' || rq.bank_id < 0 || rq.bank_id >= MAX_ACCOUNTS) {
                  printf("Teller (%d): Loop %d: Invalid BankID format (raw).\n", getpid(), command_count); // DEBUG
                 dprintf(res_fd, "FAIL Protocol error: invalid BankID format '%s'\n", bank_str);
-                fflush(fdopen(res_fd, "w")); continue;
+                continue;
             }
         }
 
@@ -192,7 +188,7 @@ static void *teller_main_inner(void *arg)
         } else {
              printf("Teller (%d): Loop %d: Unknown operation '%s'.\n", getpid(), command_count, op); // DEBUG
             dprintf(res_fd, "FAIL Protocol error: unknown operation '%s'\n", op);
-            fflush(fdopen(res_fd, "w")); continue;
+            continue;
         }
 
         // Amount Validation
@@ -200,7 +196,7 @@ static void *teller_main_inner(void *arg)
         if (rq.amount <= 0) {
              printf("Teller (%d): Loop %d: Invalid amount %ld.\n", getpid(), command_count, rq.amount); // DEBUG
             dprintf(res_fd, "FAIL Invalid amount: %ld\n", rq.amount);
-            fflush(fdopen(res_fd, "w")); continue;
+            continue;
         }
         // --- End Parsing Logic ---
 
@@ -218,37 +214,37 @@ static void *teller_main_inner(void *arg)
         switch (final_status)
         {
         case 0: // OK
+            // Check if it was a withdrawal that resulted in zero balance (implies closure)
+            // We rely on the server's result_balance, not direct SHM access here.
             if (rq.type == REQ_WITHDRAW && slot->result_balance == 0) {
                 dprintf_ret = dprintf(res_fd, "OK Account closed. Final Balance: 0 BankID_%d\n", slot->bank_id);
-            } else if (rq.bank_id == -1) { // First deposit response uses slot->bank_id
+            } else if (rq.bank_id == -1) { // First deposit response uses slot->bank_id (correctly assigned by server)
                 dprintf_ret = dprintf(res_fd, "OK Account created. BankID_%d balance=%ld\n", slot->bank_id, slot->result_balance);
-            } else {
+            } else { // Standard successful deposit or withdrawal (not resulting in zero)
                 dprintf_ret = dprintf(res_fd, "OK BankID_%d balance=%ld\n", slot->bank_id, slot->result_balance);
             }
             break;
         case 1: // Insufficient funds
+             // Use slot->bank_id here as the server should have filled it even on failure for context
             dprintf_ret = dprintf(res_fd, "FAIL insufficient balance=%ld BankID_%d\n", slot->result_balance, slot->bank_id);
             break;
         case 2: // Error
         default: // Treat unexpected statuses as errors too
-            // Use rq.bank_id here if slot->bank_id might not be valid in error cases
-            dprintf_ret = dprintf(res_fd, "FAIL operation failed (invalid account or server error) BankID_%d\n", rq.bank_id);
+            // Use slot->bank_id if available and valid, otherwise fallback to rq.bank_id for error reporting
+            int report_id = (slot->bank_id >= 0 && slot->bank_id < MAX_ACCOUNTS) ? slot->bank_id : rq.bank_id;
+            dprintf_ret = dprintf(res_fd, "FAIL operation failed (invalid account or server error) BankID_%d\n", report_id);
             break;
         }
 
-        printf("Teller (%d): Loop %d: Sent response (dprintf returned %d). Flushing...\n", getpid(), command_count, dprintf_ret); // DEBUG
+        printf("Teller (%d): Loop %d: Sent response (dprintf returned %d).\n", getpid(), command_count, dprintf_ret); // DEBUG
         if (dprintf_ret < 0) {
              fprintf(stderr, "Teller (%d): ERROR writing response to client %d: %s\n", getpid(), client_pid, strerror(errno));
              // Optionally break loop if writing fails consistently
              // break;
         }
 
-        // Try flushing the FILE* stream associated with res_fd if needed, although dprintf usually doesn't buffer heavily like printf.
-        // Using fsync might be more direct for the fd itself.
-        if (fsync(res_fd) == -1) {
-             perror("Teller fsync warning on res_fd");
-        }
-        printf("Teller (%d): Loop %d: Response flushed.\n", getpid(), command_count); // DEBUG
+        // REMOVED FSYNC CALL for FIFO
+        printf("Teller (%d): Loop %d: Response write attempted.\n", getpid(), command_count); // DEBUG
         // --- End Response Logic ---
 
     } // End while loop
@@ -257,7 +253,7 @@ static void *teller_main_inner(void *arg)
 
     // Cleanup resources
     printf("Teller (%d): Unmapping shared memory.\n", getpid()); // DEBUG
-    munmap(reg, sizeof(shm_region_t));
+    munmap(reg, sizeof(shm_region_t)); // Detach SHM
     printf("Teller (%d): Closing FILE* stream for req_fd.\n", getpid()); // DEBUG
     fclose(req_fp); // This also closes the underlying req_fd
     printf("Teller (%d): Closing res_fd.\n", getpid()); // DEBUG

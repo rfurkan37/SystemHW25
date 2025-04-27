@@ -1,0 +1,7 @@
+N deposit 1000
+BankID_2 deposit 300
+BankID_999 withdraw 50
+BankID_2 withdraw 2000
+BankID_2 withdraw 500
+BankID_2 deposit
+BankID_2 transfer 100

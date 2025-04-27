@@ -1,5 +1,6 @@
 CC=gcc
 CFLAGS=-Wall -Wextra -O2 -pthread
+# CFLAGS += -g # Uncomment for debugging
 # Add -lrt for shm_open/shm_unlink
 LDFLAGS=-pthread -lrt
 
@@ -25,7 +26,7 @@ bank_client: $(OBJS_CLIENT)
 
 # Clean up object files and executables
 clean:
-	rm -f *.o bank_server bank_client AdaBank.bankLog /tmp/adabank_fifo /tmp/bank_*_req /tmp/bank_*_res
+	rm -f *.o bank_server bank_client *.bankLog $(DEFAULT_SERVER_FIFO_NAME) /tmp/bank_*_req /tmp/bank_*_res
 	# Attempt to clean up shared memory segment if it exists
 	rm -f /dev/shm/adabank_shm || true
 

@@ -7,7 +7,8 @@
 #define MAX_ACCOUNTS 1024
 #define REQ_QUEUE_LEN 64
 #define SHM_NAME "/adabank_shm"
-#define SERVER_FIFO "/tmp/adabank_fifo"
+// #define SERVER_FIFO "/tmp/adabank_fifo" // Removed: Name/path is now dynamic (CLI arg for server)
+#define DEFAULT_SERVER_FIFO_NAME "AdaBank" // Default name if server arg omitted, used by client.
 #define LOG_FILE_NAME "AdaBank.bankLog"
 #define ACCOUNT_INACTIVE -1
 
@@ -39,5 +40,10 @@ typedef struct
     long balances[MAX_ACCOUNTS]; // balance or -1 for inactive
     int next_id;
 } shm_region_t;
+
+// Forward declaration for Teller function signature
+typedef void *(*teller_main_func_t)(void *);
+pid_t Teller(teller_main_func_t func, void *arg, void *stack, size_t stack_size);
+
 
 #endif /* BANKSIM_COMMON_H */
