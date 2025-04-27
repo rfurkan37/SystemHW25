@@ -1,2 +1,0 @@
-# Assuming BankID_0 exists from BASIC-01
-0 deposit 500

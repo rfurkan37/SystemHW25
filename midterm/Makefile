@@ -5,7 +5,7 @@ CFLAGS=-Wall -Wextra -O2 -pthread
 LDFLAGS=-pthread -lrt
 
 # Separate objects for server main, teller runtime, and teller logic
-OBJS_SERVER=bank_server.o teller_runtime.o teller.o
+OBJS_SERVER=bank_server.o teller.o
 OBJS_CLIENT=bank_client.o
 
 # Default target

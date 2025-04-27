@@ -3,12 +3,12 @@
 
 #include <semaphore.h>
 #include <stdint.h>
+#include <sys/types.h> // For pid_t
 
 #define MAX_ACCOUNTS 1024
 #define REQ_QUEUE_LEN 64
 #define SHM_NAME "/adabank_shm"
-// #define SERVER_FIFO "/tmp/adabank_fifo" // Removed: Name/path is now dynamic (CLI arg for server)
-#define DEFAULT_SERVER_FIFO_NAME "AdaBank" // Default name if server arg omitted, used by client.
+#define DEFAULT_SERVER_FIFO_NAME "AdaBank"
 #define LOG_FILE_NAME "AdaBank.bankLog"
 #define ACCOUNT_INACTIVE -1
 
@@ -20,12 +20,16 @@ typedef enum
 
 typedef struct
 {
-    int client_pid; /* originating client PID */
-    int bank_id;    /* -1 for new account */
-    req_type_t type;
+    int client_pid;      /* originating client PID */
+    int bank_id;         /* -1 for new account, or the target account ID */
+    req_type_t type;     /* REQ_DEPOSIT or REQ_WITHDRAW */
     long amount;         /* deposit / withdraw amount */
-    long result_balance; /* balance after op (filled by server) */
-    int status;          /* -1 = pending, 0 = ok, 1 = insuff funds, 2 = err */
+
+    // --- Results filled by server ---
+    long result_balance; /* balance after op */
+    // bank_id is potentially updated by server (e.g., for CREATE)
+    int op_status;       /* 0 = ok, 1 = insuff funds, 2 = err (filled by server) */
+
 } request_t;
 
 typedef struct
@@ -33,17 +37,20 @@ typedef struct
     request_t queue[REQ_QUEUE_LEN];
     int head;
     int tail;
-    sem_t slots;                 /* empty slots */
-    sem_t items;                 /* filled slots */
+    sem_t slots;                 /* empty slots in queue */
+    sem_t items;                 /* filled slots in queue */
     sem_t qmutex;                /* protect head/tail */
     sem_t dbmutex;               /* protect account table */
+    sem_t resp_ready[REQ_QUEUE_LEN]; /* Signal completion for each slot */
     long balances[MAX_ACCOUNTS]; // balance or -1 for inactive
-    int next_id;
+    int next_id;                 // Hint for finding next free account ID
 } shm_region_t;
 
-// Forward declaration for Teller function signature
+// Teller function type
 typedef void *(*teller_main_func_t)(void *);
-pid_t Teller(teller_main_func_t func, void *arg, void *stack, size_t stack_size);
 
+// API specified in the PDF
+pid_t Teller(void* func, void* arg_func);
+int waitTeller(pid_t pid, int* status);
 
 #endif /* BANKSIM_COMMON_H */
