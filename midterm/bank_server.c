@@ -78,10 +78,27 @@ extern void *teller_main(void *);         // Entry point for teller process (def
  */
 static void log_transaction(log_event_type_t type, int id, long amount, long balance)
 {
+    // <<< ADDED: Wait for log mutex
+    if (region != NULL && region != MAP_FAILED)
+    { // Check if region is mapped
+        if (sem_wait(&region->logmutex) == -1)
+        {
+            perror("SERVER ERROR: sem_wait(logmutex)");
+            // Decide how to handle: maybe return, maybe proceed without lock?
+            // Proceeding without lock risks corruption but might be better than deadlock/exit
+        }
+    }
+    else
+    {
+        fprintf(stderr, "SERVER WARNING: SHM region not available in log_transaction\n");
+        // Cannot use semaphore if region is not mapped (e.g., during early init/late cleanup?)
+    }
+
     FILE *log_fp = fopen(LOG_FILE_NAME, "a");
     if (!log_fp)
     {
         perror("SERVER ERROR: Log append failed");
+        if (region != NULL && region != MAP_FAILED) sem_post(&region->logmutex);
         return;
     }
 
@@ -107,6 +124,8 @@ static void log_transaction(log_event_type_t type, int id, long amount, long bal
     fflush(log_fp);
     fsync(fileno(log_fp)); // Ensure data is written to disk for recovery.
     fclose(log_fp);
+
+    if (region != NULL && region != MAP_FAILED) sem_post(&region->logmutex);
 }
 
 /**
@@ -170,8 +189,32 @@ static void load_state_from_log()
             current_type = LOG_CLOSE;
         else
         {
-            fprintf(stderr, "SERVER WARNING: Unparseable log line %d: %s\n", line_num, line);
-            continue;
+            // Try to parse summary format (BankID_XX D 100 W 50 150)
+            char bank_id_str[64];
+            long final_balance = 0;
+
+            // Extract bank ID from BankID_XX format
+            if (sscanf(line, "%s", bank_id_str) == 1 &&
+                strncmp(bank_id_str, "BankID_", 7) == 0)
+            {
+
+                char *id_part = bank_id_str + 7; // Skip "BankID_"
+                id = atoi(id_part);
+
+                // Extract the final balance (last number on the line)
+                char *last_space = strrchr(line, ' ');
+                if (last_space)
+                {
+                    final_balance = atol(last_space + 1);
+                    balance_from_log = final_balance;
+                    current_type = LOG_DEPOSIT; // Treat as deposit for simplicity
+                }
+            }
+            else
+            {
+                fprintf(stderr, "SERVER WARNING: Unparseable log line %d: %s\n", line_num, line);
+                continue;
+            }
         }
 
         if (id < 0 || id >= MAX_ACCOUNTS)
@@ -389,6 +432,7 @@ static void cleanup()
         sem_destroy(&region->items);
         sem_destroy(&region->qmutex);
         sem_destroy(&region->dbmutex);
+        sem_destroy(&region->logmutex);
         for (int i = 0; i < REQ_QUEUE_LEN; ++i)
             sem_destroy(&region->resp_ready[i]);
 
@@ -444,7 +488,7 @@ static void process_deposit(request_t *req, int slot_idx)
             sem_wait(&region->dbmutex); // Lock for balance write.
             region->balances[account_id] = req->amount;
             current_balance = req->amount;
-            sem_post(&region->dbmutex);                                     // Unlock.
+            sem_post(&region->dbmutex);                                  // Unlock.
             op_status = 0;                                               // OK.
             log_transaction(LOG_CREATE, account_id, current_balance, 0); // Log creation with initial balance.
             printf("Client%d deposited %ld credits... updating log\n", req->client_pid, req->amount);
@@ -462,7 +506,7 @@ static void process_deposit(request_t *req, int slot_idx)
     // Handle deposit to existing account.
     else if (req->bank_id >= 0 && req->bank_id < MAX_ACCOUNTS)
     {
-        sem_wait(&region->dbmutex);                                // Lock for balance read/write.
+        sem_wait(&region->dbmutex);                             // Lock for balance read/write.
         if (region->balances[req->bank_id] != ACCOUNT_INACTIVE) // Check if account exists and is active.
         {
             account_id = req->bank_id;
@@ -471,9 +515,9 @@ static void process_deposit(request_t *req, int slot_idx)
             if (__builtin_add_overflow(*bal_ptr, req->amount, bal_ptr))
             {
                 // Overflow detected. Operation fails. Balance remains unchanged.
-                op_status = 2;           // Error status.
-                                         // Restore previous balance before overflow attempt (though bal_ptr might be corrupted depending on overflow behavior)
-                                         // Re-reading is safer: current_balance = region->balances[account_id];
+                op_status = 2;              // Error status.
+                                            // Restore previous balance before overflow attempt (though bal_ptr might be corrupted depending on overflow behavior)
+                                            // Re-reading is safer: current_balance = region->balances[account_id];
                 sem_post(&region->dbmutex); // Unlock BEFORE potential re-read inside lock
                 sem_wait(&region->dbmutex);
                 current_balance = region->balances[account_id]; // Read the balance *before* failed attempt
@@ -535,7 +579,7 @@ static void process_withdraw(request_t *req, int slot_idx)
 
     if (account_id >= 0 && account_id < MAX_ACCOUNTS)
     {
-        sem_wait(&region->dbmutex);                              // Lock for balance read/write.
+        sem_wait(&region->dbmutex);                           // Lock for balance read/write.
         if (region->balances[account_id] != ACCOUNT_INACTIVE) // Check if account is active.
         {
             long *bal_ptr = &region->balances[account_id];
@@ -718,6 +762,8 @@ int main(int argc, char *argv[])
             ok = 0; // Available items (requests)
         if (sem_init(&region->dbmutex, 1, 1) == -1)
             ok = 0; // Mutex for balance array & next_id
+        if (sem_init(&region->logmutex, 1, 1) == -1)
+            ok = 0; // Mutex for log file access
         for (int i = 0; i < REQ_QUEUE_LEN; ++i)
             if (sem_init(&region->resp_ready[i], 1, 0) == -1)
                 ok = 0; // Response signals (initially 0)
@@ -747,7 +793,7 @@ int main(int argc, char *argv[])
         }
         // Acquired mutex, assume we can proceed with recovery.
         printf("Reloading state from log due to existing SHM...\n");
-        load_state_from_log();   // Reload state from the detailed log.
+        load_state_from_log();      // Reload state from the detailed log.
         sem_post(&region->dbmutex); // Release the mutex.
     }
 
@@ -905,7 +951,7 @@ int main(int argc, char *argv[])
             int idx = region->head;                            // Index of the request to process.
             request_t req = region->queue[idx];                // Copy request data locally.
             region->head = (region->head + 1) % REQ_QUEUE_LEN; // Advance head index.
-            sem_post(&region->qmutex);                            // Release mutex.
+            sem_post(&region->qmutex);                         // Release mutex.
 
             // Signal that a slot is now free in the queue.
             sem_post(&region->slots);

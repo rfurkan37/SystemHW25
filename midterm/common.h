@@ -50,6 +50,7 @@ typedef struct
     sem_t qmutex; // Mutex protecting access to queue 'head' and 'tail' indices.
 
     // Database Semaphores & Data
+    sem_t logmutex;               // Mutex protecting access to the log file.
     sem_t dbmutex;               // Mutex protecting access to the 'balances' array and 'next_id'.
     long balances[MAX_ACCOUNTS]; // Array storing account balances; ACCOUNT_INACTIVE indicates unused slot.
     int next_id;                 // Hint for the server when searching for the next free account ID.

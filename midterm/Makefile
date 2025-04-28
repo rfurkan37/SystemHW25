@@ -27,7 +27,7 @@ bank_client: $(OBJS_CLIENT)
 # Clean up object files and executables
 clean:
 	rm -f *.o bank_server bank_client *.bankLog $(DEFAULT_SERVER_FIFO_NAME) /tmp/bank_*_req /tmp/bank_*_res
-	# Attempt to clean up shared memory segment if it exists
+	rm -f *.file *.log
 	rm -f /dev/shm/adabank_shm || true
 
 # Phony target for clean
