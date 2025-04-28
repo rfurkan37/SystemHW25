@@ -75,20 +75,6 @@ echo "All clients completed successfully in $ELAPSED seconds."
 TOTAL_OPS=$((NUM_CLIENTS * (NUM_OPS + 1)))
 echo "Total operations processed: $TOTAL_OPS"
 
-# Check if bc is installed before trying to use it
-if command -v bc &> /dev/null; then
-    if [ $ELAPSED -gt 0 ]; then
-        OPS_PER_SEC=$(echo "scale=2; $TOTAL_OPS / $ELAPSED" | bc)
-        echo "Operations per second: $OPS_PER_SEC"
-    else
-         echo "Operations per second: N/A (elapsed time was zero)"
-    fi
-else
-    echo "WARN: 'bc' command not found. Cannot calculate operations per second."
-    echo "      Install 'bc' (e.g., 'sudo apt install bc' or 'sudo yum install bc') to see this metric."
-fi
-
-
 echo "Gracefully stopping server..."
 kill -SIGINT $SERVER_PID
 wait $SERVER_PID
