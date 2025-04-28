@@ -605,6 +605,10 @@ int waitTeller(pid_t pid, int *status)
     return waitpid(pid, status, 0); // Use waitpid with 0 flags for blocking wait
 }
 
+// --- bank_server.c ---
+
+// ... (includes, other static functions like process_deposit, cleanup etc.) ...
+
 // --- Main Server Function ---
 int main(int argc, char *argv[])
 {
@@ -641,7 +645,6 @@ int main(int argc, char *argv[])
                 perror("FATAL: shm_open (existing)");
                 exit(EXIT_FAILURE);
             }
-            // Consider adding recovery logic here if SHM is in an inconsistent state
         }
         else
         {
@@ -678,60 +681,52 @@ int main(int argc, char *argv[])
         // Initialize all semaphores and region structure for the first time
         int ok = 1;
         if (sem_init(&region->qmutex, 1, 1) == -1)
-            ok = 0; // Mutex for queue head/tail
+            ok = 0;
         if (sem_init(&region->slots, 1, REQ_QUEUE_LEN) == -1)
-            ok = 0; // Counting sem for empty slots
+            ok = 0;
         if (sem_init(&region->items, 1, 0) == -1)
-            ok = 0; // Counting sem for filled slots
+            ok = 0;
         if (sem_init(&region->dbmutex, 1, 1) == -1)
-            ok = 0; // Mutex for account balances/next_id
+            ok = 0;
         for (int i = 0; i < REQ_QUEUE_LEN; ++i)
             if (sem_init(&region->resp_ready[i], 1, 0) == -1)
-                ok = 0; // Sem for each response slot
+                ok = 0;
 
         if (!ok)
         {
             fprintf(stderr, "FATAL: sem_init failed\n");
-            cleanup(); // Attempt cleanup
+            cleanup();
             exit(EXIT_FAILURE);
         }
-        region->head = region->tail = 0; // Initialize queue indices
-        // Load state from log for the first time
-        load_state_from_log(); // dbmutex is not needed here as no one else accessing yet
+        region->head = region->tail = 0;
+        load_state_from_log();
     }
     else
     {
-        // SHM existed, potentially recovering. Try to acquire mutexes and reload state.
-        // Use timed wait to detect potential deadlock if previous server crashed holding mutex.
+        // SHM existed, try recovery
         struct timespec t;
         clock_gettime(CLOCK_REALTIME, &t);
-        t.tv_sec += 5; // Wait up to 5 seconds for the database mutex
-
+        t.tv_sec += 5;
         if (sem_timedwait(&region->dbmutex, &t) == -1)
         {
             perror("FATAL: timedwait on dbmutex during recovery");
             fprintf(stderr, "       Server might be running or SHM is corrupt.\n");
-            cleanup(); // Attempt cleanup
+            cleanup();
             exit(EXIT_FAILURE);
         }
-        // Acquired dbmutex, reload state from log to ensure consistency
         printf("Reloading state from log due to existing SHM...\n");
         load_state_from_log();
-        sem_post(&region->dbmutex); // Release mutex
-        // Note: We don't re-initialize other semaphores here, assuming they are valid.
-        // More robust recovery might involve checking/resetting semaphore values.
+        sem_post(&region->dbmutex);
     }
 
     // --- Server FIFO Setup ---
-    unlink(server_fifo_path); // Remove old FIFO if it exists
+    unlink(server_fifo_path);
     if (mkfifo(server_fifo_path, 0600) == -1)
     {
         perror("FATAL: mkfifo server");
         cleanup();
         exit(EXIT_FAILURE);
     }
-
-    // Open FIFO for reading (non-blocking)
     server_fd = open(server_fifo_path, O_RDONLY | O_NONBLOCK);
     if (server_fd == -1)
     {
@@ -739,13 +734,11 @@ int main(int argc, char *argv[])
         cleanup();
         exit(EXIT_FAILURE);
     }
-
-    // Open FIFO for writing (blocking) - This keeps the read end open even if no clients are writing
     dummy_fd = open(server_fifo_path, O_WRONLY);
     if (dummy_fd == -1)
     {
         perror("FATAL: open server write");
-        close(server_fd); // Close read end before cleanup
+        close(server_fd);
         server_fd = -1;
         cleanup();
         exit(EXIT_FAILURE);
@@ -754,10 +747,10 @@ int main(int argc, char *argv[])
     printf("Adabank is active….\n");
     printf("Waiting for clients @%s…\n", server_fifo_path);
 
-// --- Main Server Loop ---
-#define MAX_BATCH_CLIENTS 32 // Max clients to process from one read()
+    // --- Main Server Loop ---
+#define MAX_BATCH_CLIENTS 32
     pid_t batch_client_pids[MAX_BATCH_CLIENTS];
-    int batch_teller_spawn_ids[MAX_BATCH_CLIENTS]; // Store the spawn ID (counter)
+    int batch_teller_spawn_ids[MAX_BATCH_CLIENTS];
 
     while (running)
     {
@@ -767,167 +760,157 @@ int main(int argc, char *argv[])
         // 1. Check for new client connection requests using poll
         struct pollfd fds[1];
         fds[0].fd = server_fd;
-        fds[0].events = POLLIN; // Wait for data to read
-
-        // Poll with a timeout (e.g., 500ms) to periodically check 'running' flag
-        // and process queued items even if no new clients connect.
-        int poll_res = poll(fds, 1, 500);
+        fds[0].events = POLLIN;
+        int poll_res = poll(fds, 1, 250); // Use shorter timeout
 
         if (poll_res > 0 && (fds[0].revents & POLLIN))
         {
-            // Data is available on the server FIFO
-            char buf[1024]; // Buffer to read client PIDs
+            // Data available on the server FIFO
+            char buf[1024];
             ssize_t n = read(server_fd, buf, sizeof(buf) - 1);
 
             if (n > 0)
             {
-                buf[n] = '\0'; // Null-terminate the buffer
+                buf[n] = '\0';
                 char *ptr = buf;
                 char *next_pid_str;
-                char *saveptr; // For strtok_r
+                char *saveptr;
 
-                // Parse all PIDs received in this read operation
+                // Parse PIDs and launch Tellers
                 while (clients_in_batch < MAX_BATCH_CLIENTS &&
                        (next_pid_str = strtok_r(ptr, "\n", &saveptr)) != NULL)
                 {
-                    ptr = NULL; // After first call, strtok_r uses saveptr
-
+                    ptr = NULL;
                     if (strlen(next_pid_str) == 0)
-                        continue; // Skip empty lines
+                        continue;
 
-                    // Validate and convert PID string
                     char *endptr;
                     long client_pid_long = strtol(next_pid_str, &endptr, 10);
 
                     if (*endptr != '\0' || client_pid_long <= 0 || client_pid_long > INT_MAX)
                     {
                         fprintf(stderr, "Server WARN: Invalid PID received: '%s'\n", next_pid_str);
-                        continue; // Skip invalid PID
+                        continue;
                     }
                     pid_t current_client_pid = (pid_t)client_pid_long;
 
-                    // Record the first client PID of this batch
                     if (first_client_pid_in_batch == -1)
                         first_client_pid_in_batch = current_client_pid;
 
-                    // Increment spawn counter *before* forking, so the first is PID01
                     teller_spawn_counter++;
-
-                    // Spawn a Teller process for this client
-                    // Pass the client PID as the argument to the teller_main function
                     void *teller_arg = (void *)(intptr_t)current_client_pid;
                     pid_t current_teller_pid = Teller(teller_main, teller_arg);
 
                     if (current_teller_pid != -1)
                     {
-                        // Store info for batched printing *after* processing all PIDs in buffer
                         batch_client_pids[clients_in_batch] = current_client_pid;
-                        batch_teller_spawn_ids[clients_in_batch] = teller_spawn_counter; // Store the ID used
+                        batch_teller_spawn_ids[clients_in_batch] = teller_spawn_counter;
                         clients_in_batch++;
                     }
                     else
                     {
-                        // Fork failed, decrement counter
                         teller_spawn_counter--;
                         perror("  Server ERROR: Failed to spawn Teller process (fork failed)");
-                        // Optionally notify client? Difficult without a dedicated channel yet.
                     }
-                } // End while strtok_r
+                }
 
-                // --- Print Batched Connection Messages ---
+                // Print Batched Connection Messages
                 if (clients_in_batch > 0)
                 {
-                    // Print the summary line for the batch
                     printf("- Received %d clients from PIDClient%d..\n",
                            clients_in_batch, first_client_pid_in_batch);
-
-                    // Print the details for each Teller spawned in this batch
                     for (int i = 0; i < clients_in_batch; ++i)
                     {
-                        // Use the stored spawn ID and client PID
                         printf("-- Teller PID%02d is active serving Client%d…\n",
                                batch_teller_spawn_ids[i], batch_client_pids[i]);
                     }
-                    // Print waiting message again after handling the batch
                     printf("Waiting for clients @%s…\n", server_fifo_path);
-                    fflush(stdout); // Ensure output is visible
+                    fflush(stdout);
                 }
-
-            } // End if (n > 0)
+            }
             else if (n == 0)
             {
-                // EOF on the server FIFO? Should not happen with the dummy writer.
                 fprintf(stderr, "Server WARN: EOF received on server FIFO.\n");
-                // Consider closing and reopening? For now, just continue.
             }
-            else // n < 0
-            {
-                // Read error (ignore EAGAIN/EWOULDBLOCK as we use poll)
+            else
+            { // n < 0
                 if (errno != EAGAIN && errno != EWOULDBLOCK)
                 {
                     perror("Server ERROR reading FIFO");
-                    running = 0; // Stop server on critical read error
+                    running = 0;
                 }
             }
-        } // End if (poll_res > 0)
+        } // End handling poll result > 0
         else if (poll_res == -1 && errno != EINTR)
         {
-            // Poll error (ignore EINTR)
             perror("Server ERROR: poll");
-            running = 0; // Stop server on poll error
+            running = 0;
         }
 
-        // 2. Process Pending Requests from the Queue (Non-blocking check)
-        // Use sem_trywait to avoid blocking if the queue is empty
+        // 2. Process Pending Requests from the Queue
+        bool processed_item = false; // Flag to track if work was done
         while (sem_trywait(&region->items) == 0)
         {
-            // Successfully decremented 'items', meaning a request is available
+            processed_item = true; // Mark work done
             if (!running)
             {
-                // If server is stopping, put the item back and break
                 sem_post(&region->items);
                 break;
             }
 
-            // Lock the queue mutex to safely access head index
             sem_wait(&region->qmutex);
-            int idx = region->head;                            // Get index of the request
-            request_t req = region->queue[idx];                // Copy the request data
-            region->head = (region->head + 1) % REQ_QUEUE_LEN; // Move head index
-            sem_post(&region->qmutex);                         // Unlock queue mutex
-
-            // Increment 'slots' semaphore (signal that a slot is now free)
+            int idx = region->head;
+            request_t req = region->queue[idx];
+            region->head = (region->head + 1) % REQ_QUEUE_LEN;
+            sem_post(&region->qmutex);
             sem_post(&region->slots);
 
-            // Process the request (this involves DB access, so use dbmutex)
-            // Note: process_deposit/withdraw now handle dbmutex internally
             if (req.type == REQ_DEPOSIT)
                 process_deposit(&req, idx);
             else // REQ_WITHDRAW
                 process_withdraw(&req, idx);
 
-            // The process function will signal region->resp_ready[idx] when done.
-
         } // End while sem_trywait
 
-        // 3. Reap Zombie Teller Processes (Non-blocking check)
-        int status;
-        pid_t ended_pid;
-        while ((ended_pid = waitpid(-1, &status, WNOHANG)) > 0)
-        {
-            // Optionally log teller exit status
-            // printf("DEBUG: Teller PID %d terminated.\n", ended_pid);
+        // *** ADDED REAPING POINT after processing requests ***
+        if (processed_item)
+        { // Only reap if we actually processed items
+            int status_reap_post_proc;
+            pid_t ended_pid_reap_post_proc;
+            while ((ended_pid_reap_post_proc = waitpid(-1, &status_reap_post_proc, WNOHANG)) > 0)
+            {
+                // printf("DEBUG: Reaped Teller (post-proc) PID %d.\n", ended_pid_reap_post_proc); // Optional
+            }
+            // Check for errors other than no children (ECHILD)
+            if (ended_pid_reap_post_proc == -1 && errno != ECHILD)
+            {
+                perror("Server waitpid error during post-processing reap");
+            }
         }
 
-        // 4. Brief sleep if idle to prevent busy-waiting (optional)
-        // This check is less critical now due to poll timeout, but can still be useful
-        if (running && poll_res <= 0) // No client connections in this cycle
+        // 3. Reap Zombie Teller Processes (Original check - runs every iteration)
+        int status_reap_main; // Use different variable name
+        pid_t ended_pid_reap_main;
+        while ((ended_pid_reap_main = waitpid(-1, &status_reap_main, WNOHANG)) > 0)
+        {
+            // printf("DEBUG: Reaped Teller (main loop) PID %d.\n", ended_pid_reap_main); // Optional
+        }
+        // Check for errors other than no children (ECHILD)
+        if (ended_pid_reap_main == -1 && errno != ECHILD)
+        {
+            perror("Server waitpid error during main loop reap");
+        }
+
+        // 4. Brief sleep if idle
+        // Only sleep if no new clients AND no items were processed
+        if (running && poll_res <= 0 && !processed_item)
         {
             int item_count;
-            if (sem_getvalue(&region->items, &item_count) == 0 && item_count == 0) // And queue is empty
+            // Check if queue is really empty before sleeping
+            if (sem_getvalue(&region->items, &item_count) == 0 && item_count == 0)
             {
-                // Sleep for a very short duration
-                struct timespec ts = {0, 10 * 1000 * 1000}; // 10 milliseconds
+                // Use shorter sleep
+                struct timespec ts = {0, 5 * 1000 * 1000}; // 5 milliseconds
                 nanosleep(&ts, NULL);
             }
         }
@@ -937,17 +920,11 @@ int main(int argc, char *argv[])
     // --- Shutdown ---
     printf("Server shutting down...\n");
 
-    // Wait for any remaining Teller processes to finish (optional, with timeout?)
-    // A more robust shutdown might signal tellers to exit gracefully first.
-    // For now, rely on the SIGINT/SIGTERM handler setting 'running' and
-    // hoping Tellers check their 'teller_running' flag.
+    // Final cleanup of zombies before exiting main
+    int status_final; // Use different variable name
+    while (waitpid(-1, &status_final, WNOHANG) > 0)
+        ; // Reap any remaining children non-blockingly
 
-    // Final cleanup of zombies
-    int status;
-    while (waitpid(-1, &status, WNOHANG) > 0)
-        ; // Reap any remaining children
-
-    cleanup(); // Perform resource cleanup (SHM, FIFO, Semaphores, Log summarization)
-
+    cleanup(); // Perform resource cleanup
     return 0;
-}
+} // End main
