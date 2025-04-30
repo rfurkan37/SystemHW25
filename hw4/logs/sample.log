@@ -1,0 +1,20 @@
+[2023-05-10 08:30:01] INFO: Application started successfully.
+[2023-05-10 08:30:05] DEBUG: Initializing subsystem Alpha.
+[2023-05-10 08:30:10] WARN: Configuration file uses deprecated setting 'timeout_ms'.
+[2023-05-10 08:30:15] INFO: User 'jdoe' logged in from 192.168.1.100.
+[2023-05-10 08:31:00] ERROR: Failed to connect to database 'users_db'. Retrying...
+[2023-05-10 08:31:05] DEBUG: Database connection attempt #2.
+[2023-05-10 08:31:10] ERROR: Database connection failed after multiple retries. Service degraded.
+[2023-05-10 08:31:15] INFO: Processing incoming request #A45F.
+[2023-05-10 08:31:20] WARN: High memory usage detected: 95%.
+[2023-05-10 08:31:25] DEBUG: Cache hit for key 'user:jdoe'.
+[2023-05-10 08:31:30] INFO: Request #A45F completed successfully.
+[2023-05-10 08:32:00] INFO: Initializing subsystem Beta.
+[2023-05-10 08:32:05] ERROR: Subsystem Beta initialization failed: Required library 'libbeta.so' not found. CRITICAL ERROR.
+[2023-05-10 08:32:10] INFO: Attempting fallback initialization for Beta.
+[2023-05-10 08:32:15] DEBUG: Fallback successful. Beta running in limited mode.
+[2023-05-10 08:33:00] ERROR: Uncaught exception in background task 'cleanup': NullReferenceError. Task terminated.
+[2023-05-10 08:33:05] INFO: Performing scheduled maintenance.
+[2023-05-10 08:33:10] WARN: Maintenance task took longer than expected (35s).
+[2023-05-10 08:33:15] INFO: Maintenance complete. System nominal.
+[2023-05-10 08:34:00] DEBUG: Heartbeat check OK.

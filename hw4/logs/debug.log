@@ -1,0 +1,15 @@
+DEBUG: Starting component verification.
+INFO: Component A verified.
+DEBUG: Checking dependencies for Component B.
+WARN: Optional dependency 'plugin_x' not found.
+INFO: Component B verified with warnings.
+DEBUG: Running integration test suite.
+INFO: Test case 1 passed.
+FAIL: Test case 2 failed: Assertion `value == expected` failed. expected=10, value=12.
+INFO: Test case 3 passed.
+DEBUG: Analyzing test results.
+FAIL: Integration test suite reported 1 failure. Build status set to UNSTABLE.
+ERROR: Cannot proceed to deployment due to test failure.
+INFO: Generating report.
+DEBUG: Report saved to /tmp/report-123.log
+INFO: Verification process ended. STATUS: FAIL.
