@@ -1,9 +1,7 @@
 # Compiler and Flags
 CC = gcc
-# CFLAGS: -Wall (all warnings), -Wextra (more warnings), -g (debug symbols)
-#         -pthread (necessary for pthreads compile flags)
-#         -std=c11 (or c99, ensures standard compliance)
-#         -D_POSIX_C_SOURCE=200809L (ensure getline, strdup are available)
+
+# Compiler Flags: -Wall enables all warnings, -Wextra enables extra warnings
 CFLAGS = -Wall -Wextra -g -pthread -std=c11 -D_POSIX_C_SOURCE=200809L
 
 # Linker Flags: -lpthread is crucial for linking the pthreads library
