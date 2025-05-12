@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include "buffer.h"
 
+extern volatile int running; // Flag to control thread execution
+
 /**
  * Initializes the buffer with the given size
  * Allocates memory for the buffer and initializes synchronization objects
@@ -100,7 +102,19 @@ void add_to_buffer(Buffer *buffer, char *line)
     // This condition may be signaled by remove_from_buffer
     while (buffer->count == buffer->size)
     {
+        if (!running)
+        {
+            pthread_mutex_unlock(&buffer->mutex);
+            free(line); // Free the line if not added to buffer
+            return;
+        }
         pthread_cond_wait(&buffer->not_full, &buffer->mutex);
+        if (!running && buffer->count == buffer->size)
+        {
+            pthread_mutex_unlock(&buffer->mutex);
+            free(line); // Line was strdup'd by manager, must be freed if not added
+            return;
+        }
     }
 
     // Add the line to the buffer at the head position
@@ -135,11 +149,24 @@ char *remove_from_buffer(Buffer *buffer)
     // This condition may be signaled by add_to_buffer
     while (buffer->count == 0)
     {
+        if (!running)
+        {
+            pthread_mutex_unlock(&buffer->mutex);
+            return NULL;
+        }
         pthread_cond_wait(&buffer->not_empty, &buffer->mutex);
+        if (!running && buffer->count == 0)
+        {
+            pthread_mutex_unlock(&buffer->mutex);
+            return NULL;
+        }
     }
 
     // Get the line from the buffer at the tail position
     char *line = buffer->data[buffer->tail];
+
+    // Clear the pointer for safety
+    buffer->data[buffer->tail] = NULL;
 
     // Update tail using modulo arithmetic for circular buffer
     buffer->tail = (buffer->tail + 1) % buffer->size;

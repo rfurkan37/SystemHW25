@@ -7,7 +7,7 @@
  *              a specific term in these lines.
  * Author: Recep Furkan Akın
  * Student ID: 210104004042
- * 
+ *
  */
 
 #include <stdio.h>
@@ -85,6 +85,9 @@ void *manager(void *arg)
                     {
                         perror("strdup failed in manager");
                         running = 0;
+                        pthread_mutex_lock(&buffer.mutex);
+                        pthread_cond_broadcast(&buffer.not_empty);
+                        pthread_mutex_unlock(&buffer.mutex);
                         break;
                     }
                     // Add the line to the shared buffer for workers
@@ -109,6 +112,10 @@ void *manager(void *arg)
                     {
                         perror("strdup failed for long line in manager");
                         running = 0;
+                        
+                        pthread_mutex_lock(&buffer.mutex);
+                        pthread_cond_broadcast(&buffer.not_empty);
+                        pthread_mutex_unlock(&buffer.mutex);
                         break;
                     }
                     add_to_buffer(&buffer, line_copy);
