@@ -14,9 +14,13 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <ctype.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // Maximum limits
-#define MAX_CLIENTS 15
+#define MAX_CLIENTS 32
+#define MAX_MEMBERS_PER_ROOM 15
 #define MAX_USERNAME_LEN 16
 #define MAX_ROOM_NAME_LEN 32
 #define MAX_MESSAGE_LEN 1024
@@ -46,7 +50,6 @@ typedef struct {
     char receiver[MAX_USERNAME_LEN + 1];
     char room[MAX_ROOM_NAME_LEN + 1];
     char content[MAX_MESSAGE_LEN];
-    size_t content_length;
     char filename[MAX_FILENAME_LEN];
     size_t file_size;
 } message_t;
@@ -64,7 +67,7 @@ typedef struct {
 // Room structure
 typedef struct {
     char name[MAX_ROOM_NAME_LEN + 1];
-    client_t* members[MAX_CLIENTS];
+    client_t* members[MAX_MEMBERS_PER_ROOM];
     int member_count;
     pthread_mutex_t room_mutex;
 } room_t;
@@ -76,6 +79,7 @@ typedef struct file_request {
     char receiver[MAX_USERNAME_LEN + 1];
     size_t file_size;
     char* file_data;
+    time_t enqueue_time;
     struct file_request* next;
 } file_request_t;
 
@@ -138,15 +142,21 @@ void init_file_queue(void);
 void* file_transfer_worker(void* arg);
 int enqueue_file_request(const char* filename, const char* sender, 
                         const char* receiver, char* file_data, size_t file_size);
+file_request_t* dequeue_file_request(void);
 void process_file_transfer(file_request_t* request);
 void handle_file_transfer(client_t* client, message_t* msg);
 
 // Logging
 void init_logging(void);
+void cleanup_logging(void);
 void log_message(const char* type, const char* message);
 void log_connection(client_t* client);
 void log_disconnection(client_t* client);
 void log_room_join(client_t* client, const char* room_name);
+void log_room_leave(client_t* client, const char* room_name);
+void log_failed_login(const char* username, const char* reason);
+void log_whisper(const char* sender, const char* receiver, const char* message);
+void log_broadcast(const char* sender, const char* room, const char* message);
 void log_file_queued(const char* filename, const char* sender, int queue_size);
 
 // Utilities

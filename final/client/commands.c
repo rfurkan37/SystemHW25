@@ -131,23 +131,29 @@ void send_file_command(client_state_t* client, const char* receiver, const char*
         return;
     }
     
+    // Check filename length to prevent buffer overflow
+    if (strlen(filename) >= MAX_FILENAME_LEN) {
+        printf("\033[31mFilename too long (max %d characters)\033[0m\n", MAX_FILENAME_LEN - 1);
+        return;
+    }
+    
     if (!is_valid_file_type(filename)) {
         printf("\033[31mInvalid file type! Supported: .txt, .pdf, .jpg, .png\033[0m\n");
         return;
     }
     
-    // Open and read file
-    FILE* file = fopen(filename, "rb");
-    if (!file) {
+    // Open and read file using system calls
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
         printf("\033[31mFailed to open file '%s': %s\033[0m\n", filename, strerror(errno));
         return;
     }
     
     // Get file size
-    long file_size = get_file_size(file);
+    long file_size = get_file_size(fd);
     if (file_size <= 0 || file_size > MAX_FILE_SIZE) {
         printf("\033[31mInvalid file size (max %d MB)\033[0m\n", MAX_FILE_SIZE / (1024 * 1024));
-        fclose(file);
+        close(fd);
         return;
     }
     
@@ -155,17 +161,18 @@ void send_file_command(client_state_t* client, const char* receiver, const char*
     char* file_data = malloc(file_size);
     if (!file_data) {
         printf("\033[31mMemory allocation failed\033[0m\n");
-        fclose(file);
+        close(fd);
         return;
     }
     
-    if (fread(file_data, 1, file_size, file) != (size_t)file_size) {
+    ssize_t bytes_read = read(fd, file_data, file_size);
+    if (bytes_read != file_size) {
         printf("\033[31mFailed to read file data\033[0m\n");
         free(file_data);
-        fclose(file);
+        close(fd);
         return;
     }
-    fclose(file);
+    close(fd);
     
     // Send file transfer message
     message_t msg;
@@ -173,7 +180,8 @@ void send_file_command(client_state_t* client, const char* receiver, const char*
     msg.type = MSG_FILE_TRANSFER;
     strcpy(msg.sender, client->username);
     strcpy(msg.receiver, receiver);
-    strcpy(msg.filename, filename);
+    strncpy(msg.filename, filename, MAX_FILENAME_LEN);
+    msg.filename[MAX_FILENAME_LEN - 1] = '\0';
     msg.file_size = file_size;
     
     if (send_message(client->socket_fd, &msg)) {

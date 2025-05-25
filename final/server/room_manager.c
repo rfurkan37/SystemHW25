@@ -46,7 +46,7 @@ int join_room(client_t* client, const char* room_name) {
     pthread_mutex_lock(&room->room_mutex);
     
     // Check room capacity
-    if (room->member_count >= MAX_CLIENTS) {
+    if (room->member_count >= MAX_MEMBERS_PER_ROOM) {
         pthread_mutex_unlock(&room->room_mutex);
         return 0;
     }

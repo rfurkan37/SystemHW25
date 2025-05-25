@@ -2,14 +2,33 @@
 
 void init_file_queue(void) {
     g_server_state->file_queue = malloc(sizeof(file_queue_t));
+    if (!g_server_state->file_queue) {
+        fprintf(stderr, "Failed to allocate memory for file queue\n");
+        exit(1);
+    }
+    
     g_server_state->file_queue->head = NULL;
     g_server_state->file_queue->tail = NULL;
     g_server_state->file_queue->count = 0;
     g_server_state->file_queue->active_transfers = 0;
     
-    pthread_mutex_init(&g_server_state->file_queue->queue_mutex, NULL);
-    pthread_cond_init(&g_server_state->file_queue->queue_cond, NULL);
-    sem_init(&g_server_state->file_queue->queue_semaphore, 0, MAX_UPLOAD_QUEUE);
+    int ret = pthread_mutex_init(&g_server_state->file_queue->queue_mutex, NULL);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to initialize file queue mutex: %s\n", strerror(ret));
+        exit(1);
+    }
+    
+    ret = pthread_cond_init(&g_server_state->file_queue->queue_cond, NULL);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to initialize file queue condition: %s\n", strerror(ret));
+        exit(1);
+    }
+    
+    ret = sem_init(&g_server_state->file_queue->queue_semaphore, 0, MAX_UPLOAD_QUEUE);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to initialize file queue semaphore: %s\n", strerror(errno));
+        exit(1);
+    }
     
     log_message("INIT", "File transfer queue initialized");
 }
@@ -27,6 +46,7 @@ int enqueue_file_request(const char* filename, const char* sender,
     strcpy(request->receiver, receiver);
     request->file_size = file_size;
     request->file_data = file_data;
+    request->enqueue_time = time(NULL);
     request->next = NULL;
     
     pthread_mutex_lock(&g_server_state->file_queue->queue_mutex);
@@ -76,9 +96,14 @@ file_request_t* dequeue_file_request(void) {
 
 void process_file_transfer(file_request_t* request) {
     char log_msg[512];
+    
+    // Calculate wait duration
+    time_t current_time = time(NULL);
+    long wait_duration = current_time - request->enqueue_time;
+    
     snprintf(log_msg, sizeof(log_msg), 
-             "Processing file transfer: %s from %s to %s (%zu bytes)", 
-             request->filename, request->sender, request->receiver, request->file_size);
+             "'%s' from user '%s' started upload after %ld seconds in queue", 
+             request->filename, request->sender, wait_duration);
     log_message("FILE", log_msg);
     
     // Find receiver
@@ -193,6 +218,11 @@ void handle_file_transfer(client_t* client, message_t* msg) {
     
     // Validate file size
     if (msg->file_size > MAX_FILE_SIZE) {
+        char log_msg[512];
+        snprintf(log_msg, sizeof(log_msg), 
+                "File '%s' from user '%s' exceeds size limit (%zu bytes > %d bytes)", 
+                msg->filename, client->username, msg->file_size, MAX_FILE_SIZE);
+        log_message("ERROR", log_msg);
         send_error_message(client->socket_fd, "File too large");
         return;
     }
@@ -224,7 +254,7 @@ void handle_file_transfer(client_t* client, message_t* msg) {
                                file_data + bytes_received, 
                                msg->file_size - bytes_received, 0);
         if (received <= 0) {
-            free(file_data);
+            free(file_data);  // Always free on error
             send_error_message(client->socket_fd, "File transfer failed");
             return;
         }
@@ -236,7 +266,7 @@ void handle_file_transfer(client_t* client, message_t* msg) {
                             msg->receiver, file_data, msg->file_size)) {
         send_success_message(client->socket_fd, "File queued for transfer");
     } else {
-        free(file_data);
+        free(file_data);  // Free if enqueue fails
         send_error_message(client->socket_fd, "Failed to queue file");
     }
 } 

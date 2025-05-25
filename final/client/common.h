@@ -12,9 +12,15 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <ctype.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // Maximum limits (must match server)
-#define MAX_CLIENTS 15
+#define MAX_CLIENTS 32
 #define MAX_USERNAME_LEN 16
 #define MAX_ROOM_NAME_LEN 32
 #define MAX_MESSAGE_LEN 1024
@@ -43,7 +49,6 @@ typedef struct {
     char receiver[MAX_USERNAME_LEN + 1];
     char room[MAX_ROOM_NAME_LEN + 1];
     char content[MAX_MESSAGE_LEN];
-    size_t content_length;
     char filename[MAX_FILENAME_LEN];
     size_t file_size;
 } message_t;
@@ -54,6 +59,7 @@ typedef struct {
     char username[MAX_USERNAME_LEN + 1];
     char current_room[MAX_ROOM_NAME_LEN + 1];
     int connected;
+    int shutdown_pipe[2];    // Pipe for clean shutdown signaling
     pthread_t receiver_thread;
 } client_state_t;
 
@@ -84,6 +90,6 @@ void print_colored_message(const char* type, const char* sender, const char* con
 int is_valid_username(const char* username);
 int is_valid_room_name(const char* room_name);
 int is_valid_file_type(const char* filename);
-long get_file_size(FILE* file);
+long get_file_size(int fd);
 
 #endif // CLIENT_COMMON_H 

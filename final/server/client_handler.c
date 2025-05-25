@@ -31,12 +31,14 @@ int handle_login(client_t* client) {
     }
     
     if (msg.type != MSG_LOGIN) {
+        log_failed_login("UNKNOWN", "Expected login message");
         send_error_message(client->socket_fd, "Expected login message");
         return 0;
     }
     
     // Validate username
     if (!is_valid_username(msg.sender)) {
+        log_failed_login(msg.sender, "Invalid username format");
         send_error_message(client->socket_fd, "Invalid username format");
         return 0;
     }
@@ -47,6 +49,7 @@ int handle_login(client_t* client) {
         if (g_server_state->clients[i] && 
             strcmp(g_server_state->clients[i]->username, msg.sender) == 0) {
             pthread_mutex_unlock(&g_server_state->clients_mutex);
+            log_failed_login(msg.sender, "Username already taken");
             send_error_message(client->socket_fd, "Username already taken");
             return 0;
         }
@@ -63,11 +66,14 @@ int handle_login(client_t* client) {
     
     if (slot == -1) {
         pthread_mutex_unlock(&g_server_state->clients_mutex);
+        log_failed_login(msg.sender, "Server is full");
         send_error_message(client->socket_fd, "Server is full");
         return 0;
     }
     
-    strcpy(client->username, msg.sender);
+    // Safe copy with bounds checking
+    strncpy(client->username, msg.sender, MAX_USERNAME_LEN);
+    client->username[MAX_USERNAME_LEN] = '\0';
     g_server_state->clients[slot] = client;
     g_server_state->client_count++;
     

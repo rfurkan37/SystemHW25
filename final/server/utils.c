@@ -43,7 +43,16 @@ int send_message(int socket_fd, message_t* msg) {
 
 int receive_message(int socket_fd, message_t* msg) {
     ssize_t bytes_received = recv(socket_fd, msg, sizeof(message_t), 0);
-    return (bytes_received == sizeof(message_t)) ? 1 : 0;
+    if (bytes_received == sizeof(message_t)) {
+        // Ensure all string fields are null-terminated for safety
+        msg->sender[MAX_USERNAME_LEN] = '\0';
+        msg->receiver[MAX_USERNAME_LEN] = '\0';
+        msg->room[MAX_ROOM_NAME_LEN] = '\0';
+        msg->content[MAX_MESSAGE_LEN - 1] = '\0';
+        msg->filename[MAX_FILENAME_LEN - 1] = '\0';
+        return 1;
+    }
+    return 0;
 }
 
 void send_error_message(int socket_fd, const char* error) {

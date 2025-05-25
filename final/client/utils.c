@@ -59,12 +59,16 @@ int is_valid_file_type(const char* filename) {
             strcmp(ext, ".jpg") == 0 || strcmp(ext, ".png") == 0);
 }
 
-long get_file_size(FILE* file) {
-    if (!file) return -1;
+long get_file_size(int fd) {
+    if (fd < 0) return -1;
     
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
+    off_t current_pos = lseek(fd, 0, SEEK_CUR);  // Save current position
+    if (current_pos == -1) return -1;
     
-    return size;
+    off_t size = lseek(fd, 0, SEEK_END);         // Seek to end
+    if (size == -1) return -1;
+    
+    if (lseek(fd, current_pos, SEEK_SET) == -1) return -1;  // Restore position
+    
+    return (long)size;
 } 

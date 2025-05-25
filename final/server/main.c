@@ -26,15 +26,28 @@ void signal_handler(int sig) {
 
 void init_server_state(void) {
     g_server_state = malloc(sizeof(server_state_t));
+    if (!g_server_state) {
+        fprintf(stderr, "Failed to allocate memory for server state\n");
+        exit(1);
+    }
     memset(g_server_state, 0, sizeof(server_state_t));
     
     g_server_state->running = 1;
     g_server_state->client_count = 0;
     g_server_state->room_count = 0;
     
-    // Initialize mutexes
-    pthread_mutex_init(&g_server_state->clients_mutex, NULL);
-    pthread_mutex_init(&g_server_state->rooms_mutex, NULL);
+    // Initialize mutexes with error checking
+    int ret = pthread_mutex_init(&g_server_state->clients_mutex, NULL);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to initialize clients mutex: %s\n", strerror(ret));
+        exit(1);
+    }
+    
+    ret = pthread_mutex_init(&g_server_state->rooms_mutex, NULL);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to initialize rooms mutex: %s\n", strerror(ret));
+        exit(1);
+    }
     
     // Initialize file queue
     init_file_queue();
@@ -115,9 +128,18 @@ void accept_connections(void) {
         // Create new client
         client_t* new_client = create_client(client_socket, client_addr);
         if (new_client) {
-            pthread_create(&new_client->thread_id, NULL, 
-                          client_handler, (void*)new_client);
-            pthread_detach(new_client->thread_id);
+            int ret = pthread_create(&new_client->thread_id, NULL, 
+                                    client_handler, (void*)new_client);
+            if (ret != 0) {
+                log_message("ERROR", "Failed to create client thread");
+                cleanup_client(new_client);
+                close(client_socket);
+            } else {
+                pthread_detach(new_client->thread_id);
+            }
+        } else {
+            // Failed to create client, close socket to prevent leak
+            close(client_socket);
         }
     }
 }
@@ -159,6 +181,9 @@ void cleanup_server(void) {
     free(g_server_state);
     
     log_message("SHUTDOWN", "Server shutdown complete");
+    
+    // Close log file last
+    cleanup_logging();
 }
 
 int main(int argc, char* argv[]) {
@@ -187,7 +212,12 @@ int main(int argc, char* argv[]) {
     
     // Start file transfer thread
     pthread_t file_thread;
-    pthread_create(&file_thread, NULL, file_transfer_worker, NULL);
+    int ret = pthread_create(&file_thread, NULL, file_transfer_worker, NULL);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to create file transfer thread: %s\n", strerror(ret));
+        cleanup_server();
+        exit(1);
+    }
     pthread_detach(file_thread);
     
     log_message("START", "Chat server started successfully");
