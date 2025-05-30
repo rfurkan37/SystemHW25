@@ -1,0 +1,2727 @@
+===== client/commands.c =====
+#include "common.h" // Includes shared/protocol.h and shared/utils.h
+#include <ctype.h> // For isspace
+
+// Helper to trim leading whitespace, useful for message part of commands
+const char *trim_leading_whitespace(const char *str) {
+    while (*str && isspace((unsigned char)*str)) {
+        str++;
+    }
+    return str;
+}
+
+void process_user_command(client_state_t *client, const char *input) {
+    char command_buffer[64]; // For the command itself e.g. "/join"
+    char arg1_buffer[FILENAME_BUF_SIZE]; // Max for filename or room_name or username
+    char arg2_buffer[MESSAGE_BUF_SIZE];  // Max for message content or username
+
+    // Clear buffers
+    memset(command_buffer, 0, sizeof(command_buffer));
+    memset(arg1_buffer, 0, sizeof(arg1_buffer));
+    memset(arg2_buffer, 0, sizeof(arg2_buffer));
+
+    const char *ptr = input;
+    int i = 0;
+
+    // Extract command
+    while (*ptr && !isspace((unsigned char)*ptr) && i < (int)sizeof(command_buffer) - 1) {
+        command_buffer[i++] = *ptr++;
+    }
+    command_buffer[i] = '\0';
+    ptr = trim_leading_whitespace(ptr);
+
+    // Special handling for commands where the rest of the line is a single argument (message)
+    if (strcmp(command_buffer, "/broadcast") == 0) {
+        if (strlen(ptr) > 0) { // Check if there is a message
+            strncpy(arg1_buffer, ptr, sizeof(arg1_buffer) - 1); // Message is arg1
+            send_broadcast_command(client, arg1_buffer);
+        } else {
+            printf("\033[31mUsage: /broadcast <message>\033[0m\n");
+        }
+        return;
+    }
+
+    if (strcmp(command_buffer, "/whisper") == 0) {
+        const char *username_end = ptr;
+        i = 0;
+        // Extract username (arg1)
+        while (*username_end && !isspace((unsigned char)*username_end) && i < MAX_USERNAME_LEN) {
+            arg1_buffer[i++] = *username_end++;
+        }
+        arg1_buffer[i] = '\0';
+        username_end = trim_leading_whitespace(username_end);
+
+        if (strlen(arg1_buffer) > 0 && strlen(username_end) > 0) { // Check for username and message
+            strncpy(arg2_buffer, username_end, sizeof(arg2_buffer) - 1); // Message is arg2
+            send_whisper_command(client, arg1_buffer, arg2_buffer);
+        } else {
+            printf("\033[31mUsage: /whisper <username> <message>\033[0m\n");
+        }
+        return;
+    }
+
+    // For other commands, parse up to two arguments
+    i = 0;
+    // Extract arg1
+    while (*ptr && !isspace((unsigned char)*ptr) && i < (int)sizeof(arg1_buffer) - 1) {
+        arg1_buffer[i++] = *ptr++;
+    }
+    arg1_buffer[i] = '\0';
+    ptr = trim_leading_whitespace(ptr);
+
+    i = 0;
+    // Extract arg2
+    while (*ptr && !isspace((unsigned char)*ptr) && i < (int)sizeof(arg2_buffer) - 1) {
+        arg2_buffer[i++] = *ptr++;
+    }
+     // For sendfile, arg2 is username, doesn't contain spaces. For others, arg2 might not be used.
+    arg2_buffer[i] = '\0';
+
+
+    // --- Command dispatching ---
+    if (strcmp(command_buffer, "/join") == 0) {
+        if (strlen(arg1_buffer) > 0) {
+            send_join_room_command(client, arg1_buffer);
+        } else {
+            printf("\033[31mUsage: /join <room_name>\033[0m\n");
+        }
+    } else if (strcmp(command_buffer, "/leave") == 0) {
+        send_leave_room_command(client);
+    } else if (strcmp(command_buffer, "/sendfile") == 0) {
+        // /sendfile <filename> <username>
+        if (strlen(arg1_buffer) > 0 && strlen(arg2_buffer) > 0) {
+            send_file_request_command(client, arg1_buffer, arg2_buffer); // arg1=filename, arg2=username
+        } else {
+            printf("\033[31mUsage: /sendfile <filename> <username>\033[0m\n");
+            printf("\033[32mSupported file types: .txt, .pdf, .jpg, .png (max 3MB)\033[0m\n");
+        }
+    } else if (strcmp(command_buffer, "/exit") == 0) {
+        send_disconnect_signal(client);
+        client->connected = 0; // Signal input loop to stop
+    } else if (strcmp(command_buffer, "/help") == 0) {
+        display_help_message();
+    } else {
+        printf("\033[31mUnknown command: '%s'. Type /help for available commands.\033[0m\n", command_buffer);
+    }
+}
+
+void send_join_room_command(client_state_t *client, const char *room_name) {
+    if (!is_valid_room_name(room_name)) {
+        printf("\033[31mInvalid room name: Alphanumeric, 1-%d chars, no spaces.\033[0m\n", MAX_ROOM_NAME_LEN);
+        return;
+    }
+
+    message_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = MSG_JOIN_ROOM;
+    strncpy(msg.sender, client->username, USERNAME_BUF_SIZE -1);
+    strncpy(msg.room, room_name, ROOM_NAME_BUF_SIZE - 1);
+
+    if (!send_message(client->socket_fd, &msg)) {
+        printf("\033[31mFailed to send join command to server.\033[0m\n");
+    }
+    // Server will send a success/error message, handled by receiver_thread
+}
+
+void send_leave_room_command(client_state_t *client) {
+    if (strlen(client->current_room) == 0) {
+        printf("\033[31mYou are not currently in any room.\033[0m\n");
+        return;
+    }
+    message_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = MSG_LEAVE_ROOM;
+    strncpy(msg.sender, client->username, USERNAME_BUF_SIZE -1);
+    // Server knows current room from client state on server-side, but can send if needed
+    // strncpy(msg.room, client->current_room, ROOM_NAME_BUF_SIZE - 1); 
+
+    if (!send_message(client->socket_fd, &msg)) {
+        printf("\033[31mFailed to send leave command to server.\033[0m\n");
+    }
+    // Server confirmation will update client's current_room state.
+}
+
+void send_broadcast_command(client_state_t *client, const char *message_content) {
+    if (strlen(client->current_room) == 0) {
+        printf("\033[31mYou must be in a room to broadcast. Use /join <room_name>.\033[0m\n");
+        return;
+    }
+    if (strlen(message_content) == 0) {
+        printf("\033[31mCannot broadcast an empty message.\033[0m\n");
+        return;
+    }
+    if (strlen(message_content) >= MESSAGE_BUF_SIZE) {
+        printf("\033[31mMessage too long (max %d chars).\033[0m\n", MESSAGE_BUF_SIZE -1);
+        return;
+    }
+
+    message_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = MSG_BROADCAST;
+    strncpy(msg.sender, client->username, USERNAME_BUF_SIZE -1);
+    strncpy(msg.room, client->current_room, ROOM_NAME_BUF_SIZE -1); // Server uses this to route
+    strncpy(msg.content, message_content, MESSAGE_BUF_SIZE - 1);
+
+    if (!send_message(client->socket_fd, &msg)) {
+        printf("\033[31mFailed to send broadcast message.\033[0m\n");
+    }
+    // Client does NOT print its own broadcast. Server sends confirmation/echo.
+    // PDF example: > /broadcast Hello team! -> [Server]: Message sent to room 'teamchat'
+    // Then, client receives the actual broadcast message through message_receiver thread.
+}
+
+void send_whisper_command(client_state_t *client, const char *target_username, const char *message_content) {
+    if (!is_valid_username(target_username)) {
+        printf("\033[31mInvalid target username: Alphanumeric, 1-%d chars.\033[0m\n", MAX_USERNAME_LEN);
+        return;
+    }
+    if (strcmp(client->username, target_username) == 0) {
+        printf("\033[31mYou cannot whisper to yourself.\033[0m\n");
+        return;
+    }
+    if (strlen(message_content) == 0) {
+        printf("\033[31mCannot whisper an empty message.\033[0m\n");
+        return;
+    }
+    if (strlen(message_content) >= MESSAGE_BUF_SIZE) {
+        printf("\033[31mMessage too long (max %d chars).\033[0m\n", MESSAGE_BUF_SIZE -1);
+        return;
+    }
+
+
+    message_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = MSG_WHISPER;
+    strncpy(msg.sender, client->username, USERNAME_BUF_SIZE -1);
+    strncpy(msg.receiver, target_username, USERNAME_BUF_SIZE -1);
+    strncpy(msg.content, message_content, MESSAGE_BUF_SIZE - 1);
+
+    if (!send_message(client->socket_fd, &msg)) {
+        printf("\033[31mFailed to send whisper message.\033[0m\n");
+    }
+    // Client does NOT print its own whisper. Server sends confirmation.
+    // PDF example: > /whisper john42 Can you check this? -> [Server]: Whisper sent to john42
+}
+
+void send_file_request_command(client_state_t *client, const char *filepath, const char *target_username) {
+    if (!is_valid_username(target_username)) {
+        printf("\033[31mInvalid receiver username (alphanumeric, max %d chars).\033[0m\n", MAX_USERNAME_LEN);
+        return;
+    }
+    if (strcmp(client->username, target_username) == 0) {
+        printf("\033[31mYou cannot send a file to yourself.\033[0m\n");
+        return;
+    }
+
+    const char *filename_ptr = strrchr(filepath, '/');
+    filename_ptr = (filename_ptr) ? filename_ptr + 1 : filepath;
+
+    if (strlen(filename_ptr) >= FILENAME_BUF_SIZE) {
+        printf("\033[31mFilename too long (max %d characters).\033[0m\n", FILENAME_BUF_SIZE - 1);
+        return;
+    }
+    if (!is_valid_file_type(filename_ptr)) {
+        printf("\033[31mInvalid file type! Supported: .txt, .pdf, .jpg, .png\033[0m\n");
+        return;
+    }
+
+    int fd = open(filepath, O_RDONLY);
+    if (fd < 0) {
+        printf("\033[31mFailed to open file '%s': %s\033[0m\n", filepath, strerror(errno));
+        return;
+    }
+
+    long file_size = get_file_size_from_fd(fd); // Using shared utility
+    if (file_size < 0) {
+        printf("\033[31mFailed to get file size for '%s'.\033[0m\n", filepath);
+        close(fd);
+        return;
+    }
+    if (file_size == 0) {
+        printf("\033[31mCannot send an empty file.\033[0m\n");
+        close(fd);
+        return;
+    }
+    if (file_size > MAX_FILE_SIZE) {
+        printf("\033[31mFile size %ld bytes exceeds limit of %d MB.\033[0m\n", file_size, MAX_FILE_SIZE / (1024 * 1024));
+        close(fd);
+        return;
+    }
+
+    char *file_data_buffer = malloc(file_size);
+    if (!file_data_buffer) {
+        printf("\033[31mMemory allocation failed for file data.\033[0m\n");
+        close(fd);
+        return;
+    }
+
+    ssize_t bytes_read = read(fd, file_data_buffer, file_size);
+    close(fd); // Close file descriptor as soon as read is done
+
+    if (bytes_read != file_size) {
+        printf("\033[31mFailed to read entire file ('%s'). Read %zd, expected %ld.\033[0m\n", filepath, bytes_read, file_size);
+        free(file_data_buffer);
+        return;
+    }
+
+    message_t msg_header;
+    memset(&msg_header, 0, sizeof(msg_header));
+    msg_header.type = MSG_FILE_TRANSFER_REQUEST; // Client requests to send a file
+    strncpy(msg_header.sender, client->username, USERNAME_BUF_SIZE -1);
+    strncpy(msg_header.receiver, target_username, USERNAME_BUF_SIZE -1);
+    strncpy(msg_header.filename, filename_ptr, FILENAME_BUF_SIZE - 1);
+    msg_header.file_size = (size_t)file_size;
+
+    if (send_message(client->socket_fd, &msg_header)) {
+        // If header sent successfully, now send the actual file data
+        size_t total_bytes_sent = 0;
+        char *current_pos_in_buffer = file_data_buffer;
+        while (total_bytes_sent < (size_t)file_size) {
+            ssize_t sent_now = send(client->socket_fd, current_pos_in_buffer, (size_t)file_size - total_bytes_sent, 0);
+            if (sent_now <= 0) {
+                printf("\033[31mFailed to send file data chunk: %s. Transfer aborted.\033[0m\n", strerror(errno));
+                // Server might be unaware of the partial send. Client needs to handle this state.
+                // For this project, we assume the server will timeout or the client disconnects.
+                break; 
+            }
+            total_bytes_sent += sent_now;
+            current_pos_in_buffer += sent_now;
+        }
+
+        if (total_bytes_sent == (size_t)file_size) {
+            // Successfully sent header and all data. Now wait for server confirmation
+            // like "[Server]: File added to the upload queue." via message_receiver thread.
+            // No local print here, as per PDF.
+        } else {
+            printf("\033[31mIncomplete file data transfer for '%s' to %s. Sent %zu of %ld bytes.\033[0m\n",
+                   filename_ptr, target_username, total_bytes_sent, file_size);
+        }
+    } else {
+        printf("\033[31mFailed to send file transfer request header for '%s'.\033[0m\n", filename_ptr);
+    }
+
+    free(file_data_buffer); // IMPORTANT: free the buffer after sending or on failure
+}
+
+void send_disconnect_signal(client_state_t *client) {
+    message_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = MSG_DISCONNECT;
+    strncpy(msg.sender, client->username, USERNAME_BUF_SIZE-1);
+
+    // Best effort send, client is exiting anyway.
+    if(send_message(client->socket_fd, &msg)){
+         // printf("\033[33mDisconnect signal sent to server.\033[0m\n"); // Optional feedback
+    } else {
+        // printf("\033[31mFailed to send disconnect signal. Closing locally.\033[0m\n"); // Optional
+    }
+}
+
+void display_help_message(void) {
+    printf("\033[36m=== Available Commands ===\033[0m\n");
+    printf("\033[33m/join <room_name>\033[0m          - Join or create a chat room (e.g., /join general)\n");
+    printf("\033[33m/leave\033[0m                     - Leave the current chat room\n");
+    printf("\033[33m/broadcast <message>\033[0m       - Send a message to everyone in your current room\n");
+    printf("\033[33m                               (e.g., /broadcast Hello everyone!)\n");
+    printf("\033[33m/whisper <username> <message>\033[0m - Send a private message to a specific user\n");
+    printf("\033[33m                               (e.g., /whisper alice Hi Alice)\n");
+    printf("\033[33m/sendfile <filepath> <user>\033[0m - Send a file to a specific user\n");
+    printf("\033[33m                               (e.g., /sendfile documents/report.pdf bob)\n");
+    printf("\033[33m/help\033[0m                      - Show this help message\n");
+    printf("\033[33m/exit\033[0m                      - Disconnect from the server and exit the client\n");
+    printf("\033[36m========================\033[0m\n");
+    printf("\033[32mFile Info: Supported types: .txt, .pdf, .jpg, .png. Max size: 3MB.\033[0m\n");
+    printf("\033[32mUsernames & Room Names: Alphanumeric, no spaces.\n");
+    printf("\033[32mMax Username: %d chars. Max Room Name: %d chars.\033[0m\n", MAX_USERNAME_LEN, MAX_ROOM_NAME_LEN);
+}===== client/common.h =====
+#ifndef CLIENT_COMMON_H
+#define CLIENT_COMMON_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h> // For O_RDONLY etc.
+#include <sys/select.h> // For fd_set, select
+
+#include "../shared/protocol.h" // Message structures and constants
+#include "../shared/utils.h"    // Shared utility functions like send_message
+
+// Client state
+typedef struct
+{
+    int socket_fd;
+    char username[USERNAME_BUF_SIZE];
+    char current_room[ROOM_NAME_BUF_SIZE];
+    volatile int connected;      // Ensure visibility across threads
+    pthread_t receiver_thread_id;
+    int shutdown_pipe_fds[2]; // Pipe for signaling shutdown between threads
+} client_state_t;
+
+// Function declarations for client-specific logic
+
+// client/main.c
+void signal_handler_client(int sig); // Renamed to avoid conflict if ever linked together
+void cleanup_client_resources(client_state_t *client_state);
+
+// client/network.c
+int connect_client_to_server(client_state_t *client_state, const char *server_ip, int port);
+int perform_client_login(client_state_t *client_state);
+
+// client/commands.c
+void process_user_command(client_state_t *client_state, const char *input_buffer);
+void send_join_room_command(client_state_t *client_state, const char *room_name);
+void send_leave_room_command(client_state_t *client_state);
+void send_broadcast_command(client_state_t *client_state, const char *message_content);
+void send_whisper_command(client_state_t *client_state, const char *target_username, const char *message_content);
+void send_file_request_command(client_state_t *client_state, const char *filepath, const char *target_username);
+void send_disconnect_signal(client_state_t *client_state);
+void display_help_message(void);
+
+
+// client/main.c (message_receiver thread function)
+void *client_message_receiver_thread(void *arg);
+void handle_user_input_loop(client_state_t *client_state);
+
+
+#endif // CLIENT_COMMON_H===== client/main.c =====
+#include "common.h"
+#include <sys/stat.h> // For S_IRUSR, S_IWUSR for received files
+#include <libgen.h> // For basename
+#include <time.h>   // For nanosleep
+
+// Global client state pointer for signal handler
+static client_state_t *g_client_state_ptr = NULL;
+
+void signal_handler_client(int sig) {
+    if (sig == SIGINT && g_client_state_ptr != NULL && g_client_state_ptr->connected) {
+        printf("\n\033[33mSIGINT received. Attempting to disconnect gracefully...\033[0m\n");
+        
+        // Inform server of disconnection
+        send_disconnect_signal(g_client_state_ptr);
+        
+        // Set connected flag to 0 to stop loops
+        g_client_state_ptr->connected = 0; 
+
+        // Signal the main input loop thread to wake up and exit
+        // Writing a byte to the pipe is a common way to unblock select/poll
+        if (g_client_state_ptr->shutdown_pipe_fds[1] != -1) {
+            char signal_byte = 's'; // Arbitrary byte
+            if (write(g_client_state_ptr->shutdown_pipe_fds[1], &signal_byte, 1) == -1) {
+                // perror("write to shutdown_pipe failed in signal_handler");
+                // If write fails, the select in input loop might not unblock immediately
+                // but connected flag should still stop it.
+            }
+        }
+        // The main thread will handle further cleanup.
+    }
+}
+
+void *client_message_receiver_thread(void *arg) {
+    client_state_t *client = (client_state_t *)arg;
+    message_t received_msg;
+
+    printf("\033[36mMessage receiver thread started.\033[0m\n");
+
+    while (client->connected) {
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(client->socket_fd, &read_fds);
+
+        struct timeval timeout;
+        timeout.tv_sec = 1;  // Check for client->connected status every 1 second
+        timeout.tv_usec = 0;
+
+        int activity = select(client->socket_fd + 1, &read_fds, NULL, NULL, &timeout);
+
+        if (!client->connected) break; // Check flag immediately after select or timeout
+
+        if (activity < 0) {
+            if (errno == EINTR) continue; // Interrupted by a signal (like SIGINT), loop and check connected flag
+            perror("\033[31mselect() error in receiver thread\033[0m");
+            client->connected = 0; // Assume connection lost on other errors
+            break;
+        }
+
+        if (activity == 0) { // Timeout
+            continue; // Loop back to check client->connected and select again
+        }
+
+        // If there's activity on the client socket
+        if (FD_ISSET(client->socket_fd, &read_fds)) {
+            if (receive_message(client->socket_fd, &received_msg) <= 0) {
+                if (client->connected) { // Avoid message if already intentionally disconnecting
+                    printf("\n\033[31mConnection to server lost or server closed connection.\033[0m\n");
+                    client->connected = 0; // Signal main thread and self to stop
+                }
+                break;
+            }
+
+            // Process received message
+            printf("\n"); // Newline to separate from user's potential input prompt line
+            switch (received_msg.type) {
+                case MSG_BROADCAST:
+                    // Only display if client is in the room the broadcast is for
+                    if (strcmp(client->current_room, received_msg.room) == 0) {
+                        printf("\033[36m[%s] %s: %s\033[0m\n", 
+                               received_msg.room, received_msg.sender, received_msg.content);
+                    }
+                    break;
+                case MSG_WHISPER:
+                    printf("\033[35m[WHISPER from %s]: %s\033[0m\n", 
+                           received_msg.sender, received_msg.content);
+                    break;
+                case MSG_SERVER_NOTIFICATION: // For generic server messages like "User X joined"
+                case MSG_SUCCESS: // For command success confirmations
+                    if (strstr(received_msg.content, "Joined room") && strlen(received_msg.room) > 0) {
+                        strncpy(client->current_room, received_msg.room, ROOM_NAME_BUF_SIZE -1);
+                        printf("\033[32m[SERVER]: %s '%s'\033[0m\n", received_msg.content, received_msg.room);
+                    } else if (strstr(received_msg.content, "Left room")) {
+                        printf("\033[32m[SERVER]: %s\033[0m\n", received_msg.content);
+                        memset(client->current_room, 0, sizeof(client->current_room));
+                    } else if (strstr(received_msg.content, "Disconnected. Goodbye!")) {
+                         printf("\033[33m[SERVER]: %s\033[0m\n", received_msg.content);
+                         client->connected = 0; // Server confirms disconnect
+                    }
+                     else {
+                        printf("\033[32m[SERVER]: %s\033[0m\n", received_msg.content);
+                    }
+                    break;
+                case MSG_FILE_TRANSFER_ACCEPT: // Server confirms file is queued/being processed
+                     printf("\033[32m[SERVER]: %s (Filename: %s)\033[0m\n", received_msg.content, received_msg.filename);
+                    break;
+                case MSG_ERROR:
+                case MSG_LOGIN_FAILURE: // Handled at login, but good to catch here too
+                case MSG_FILE_TRANSFER_REJECT:
+                    printf("\033[31m[SERVER ERROR]: %s\033[0m\n", received_msg.content);
+                    if (strstr(received_msg.content, "shutting down")) {
+                        client->connected = 0;
+                    }
+                    break;
+                case MSG_FILE_TRANSFER_DATA: // Header for incoming file
+                    printf("\033[35m[FILE]: Receiving '%s' (%zu bytes) from %s.\033[0m\n",
+                           received_msg.filename, received_msg.file_size, received_msg.sender);
+                    
+                    if (received_msg.file_size == 0 || received_msg.file_size > MAX_FILE_SIZE) {
+                        printf("\033[31m[FILE]: Invalid file size. Transfer aborted.\033[0m\n");
+                        // Client should ideally inform server, but for now, just skip receiving data
+                        break; 
+                    }
+
+                    char *file_buffer = malloc(received_msg.file_size);
+                    if (!file_buffer) {
+                        printf("\033[31m[FILE]: Memory allocation failed for receiving file. (%zu bytes)\033[0m\n", received_msg.file_size);
+                        // Skip receiving data
+                        break; 
+                    }
+
+                    size_t total_bytes_received = 0;
+                    while (total_bytes_received < received_msg.file_size) {
+                        ssize_t chunk_received = recv(client->socket_fd, 
+                                                      file_buffer + total_bytes_received,
+                                                      received_msg.file_size - total_bytes_received, 0);
+                        if (chunk_received <= 0) {
+                            printf("\033[31m[FILE]: Failed to receive file data chunk or connection lost.\033[0m\n");
+                            free(file_buffer);
+                            file_buffer = NULL; // Mark as freed
+                            client->connected = 0; // Assume critical error
+                            goto file_receive_loop_exit; // Exit outer while loop
+                        }
+                        total_bytes_received += chunk_received;
+                    }
+                    
+                    if (file_buffer && total_bytes_received == received_msg.file_size) {
+                        char local_filename[FILENAME_BUF_SIZE + 20]; // Extra space for "received_" and counter
+                        char original_basename[FILENAME_BUF_SIZE];
+                        
+                        // Use a copy for basename() as it might modify its argument
+                        char temp_path[FILENAME_BUF_SIZE];
+                        strncpy(temp_path, received_msg.filename, FILENAME_BUF_SIZE -1);
+                        strncpy(original_basename, basename(temp_path), FILENAME_BUF_SIZE -1);
+
+                        snprintf(local_filename, sizeof(local_filename), "received_%s", original_basename);
+                        
+                        int counter = 0;
+                        // Handle filename collision (Test Scenario 9)
+                        while (access(local_filename, F_OK) == 0) {
+                            counter++;
+                            snprintf(local_filename, sizeof(local_filename), "received_%s_%d", original_basename, counter);
+                            if (counter > 100) { // Safety break
+                                printf("\033[31m[FILE]: Could not find a unique name for '%s' after 100 attempts.\033[0m\n", original_basename);
+                                free(file_buffer); file_buffer = NULL;
+                                break;
+                            }
+                        }
+
+                        if (file_buffer) { // Check if still valid after collision check
+                            int out_fd = open(local_filename, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                            if (out_fd >= 0) {
+                                ssize_t bytes_written = write(out_fd, file_buffer, received_msg.file_size);
+                                close(out_fd);
+                                if (bytes_written == (ssize_t)received_msg.file_size) {
+                                    printf("\033[32m[FILE]: File '%s' received and saved as '%s'.\033[0m\n", original_basename, local_filename);
+                                } else {
+                                    printf("\033[31m[FILE]: Error writing received file '%s' to disk.\033[0m\n", local_filename);
+                                }
+                            } else {
+                                printf("\033[31m[FILE]: Could not open local file '%s' for writing: %s\033[0m\n", local_filename, strerror(errno));
+                            }
+                        }
+                    }
+                    if (file_buffer) free(file_buffer);
+                    break;
+                default:
+                    printf("\033[33m[DEBUG] Received unhandled message type from server: %d\033[0m\n", received_msg.type);
+                    // For robustness, you might want to print more details from received_msg
+                    // printf("Content: %s\n", received_msg.content);
+                    break;
+            }
+            if (client->connected) { // Only print prompt if still connected
+                printf("> ");
+                fflush(stdout);
+            }
+        }
+        file_receive_loop_exit:; // Label for goto if critical error during file reception
+    }
+    
+    if (client->shutdown_pipe_fds[1] != -1) { // Signal input loop if receiver exits first
+         char signal_byte = 's';
+         write(client->shutdown_pipe_fds[1], &signal_byte, 1); // Best effort
+    }
+
+    printf("\033[36mMessage receiver thread stopped.\033[0m\n");
+    return NULL;
+}
+
+
+void handle_user_input_loop(client_state_t *client) {
+    char input_buffer[MESSAGE_BUF_SIZE + FILENAME_BUF_SIZE + 20]; // Ample space for commands and args
+
+    printf("> ");
+    fflush(stdout);
+
+    while (client->connected) {
+        fd_set read_fds_input;
+        FD_ZERO(&read_fds_input);
+        FD_SET(STDIN_FILENO, &read_fds_input);
+        FD_SET(client->shutdown_pipe_fds[0], &read_fds_input); // Listen on the read end of the pipe
+
+        int max_fd_input = (client->shutdown_pipe_fds[0] > STDIN_FILENO) ? client->shutdown_pipe_fds[0] : STDIN_FILENO;
+
+        int activity_input = select(max_fd_input + 1, &read_fds_input, NULL, NULL, NULL); // Blocking select
+
+        if (!client->connected) break; // Check flag after select returns
+
+        if (activity_input < 0) {
+            if (errno == EINTR && client->connected) continue; // Interrupted by signal (e.g. SIGINT handled), re-check connected
+            perror("\033[31mselect() error in input loop\033[0m");
+            break; // Exit on other errors
+        }
+
+        // Check if shutdown was signaled via pipe (e.g., by receiver thread or SIGINT)
+        if (FD_ISSET(client->shutdown_pipe_fds[0], &read_fds_input)) {
+            char buf[1];
+            read(client->shutdown_pipe_fds[0], buf, 1); // Consume the byte
+            // printf("Shutdown signal received via pipe in input loop.\n");
+            client->connected = 0; // Ensure flag is set
+            break; 
+        }
+
+        // Check for user input from STDIN
+        if (FD_ISSET(STDIN_FILENO, &read_fds_input)) {
+            if (fgets(input_buffer, sizeof(input_buffer), stdin) != NULL) {
+                input_buffer[strcspn(input_buffer, "\n")] = '\0'; // Remove newline
+
+                if (strlen(input_buffer) > 0) {
+                    process_user_command(client, input_buffer);
+                }
+                if (client->connected) { // Show prompt only if still connected after processing command
+                    printf("> ");
+                    fflush(stdout);
+                }
+            } else {
+                // fgets returned NULL (EOF or error)
+                if (feof(stdin)) {
+                    printf("\n\033[33mEOF detected on input. Disconnecting...\033[0m\n");
+                } else {
+                    printf("\n\033[31mError reading input. Disconnecting...\033[0m\n");
+                }
+                if (client->connected) { // If not already disconnected by a command like /exit
+                   send_disconnect_signal(client);
+                }
+                client->connected = 0; // Signal loop to stop
+                break;
+            }
+        }
+    }
+     printf("\033[36mInput handling stopped.\033[0m\n");
+}
+
+
+void cleanup_client_resources(client_state_t *client_state) {
+    printf("\033[36mCleaning up client resources...\033[0m\n");
+    if (client_state->socket_fd >= 0) {
+        // Shutdown can provide a more graceful TCP close
+        shutdown(client_state->socket_fd, SHUT_RDWR); 
+        close(client_state->socket_fd);
+        client_state->socket_fd = -1;
+    }
+    // Close pipe FDs
+    if (client_state->shutdown_pipe_fds[0] >= 0) {
+        close(client_state->shutdown_pipe_fds[0]);
+        client_state->shutdown_pipe_fds[0] = -1;
+    }
+    if (client_state->shutdown_pipe_fds[1] >= 0) {
+        close(client_state->shutdown_pipe_fds[1]);
+        client_state->shutdown_pipe_fds[1] = -1;
+    }
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <server_ip> <port>\n", argv[0]);
+        fprintf(stderr, "Example: %s 127.0.0.1 5000\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const char *server_ip = argv[1];
+    int port = atoi(argv[2]);
+    if (port <= 0 || port > 65535) {
+        fprintf(stderr, "\033[31mInvalid port number: %s. Must be 1-65535.\033[0m\n", argv[2]);
+        return EXIT_FAILURE;
+    }
+
+    client_state_t client_state_instance;
+    memset(&client_state_instance, 0, sizeof(client_state_instance));
+    client_state_instance.socket_fd = -1; // Initialize to invalid
+    client_state_instance.shutdown_pipe_fds[0] = -1;
+    client_state_instance.shutdown_pipe_fds[1] = -1;
+    
+    g_client_state_ptr = &client_state_instance; // For signal handler
+
+    // Create pipe for shutdown signaling between threads
+    if (pipe(client_state_instance.shutdown_pipe_fds) == -1) {
+        perror("\033[31mFailed to create shutdown pipe\033[0m");
+        return EXIT_FAILURE;
+    }
+
+    // Set up SIGINT handler (Ctrl+C)
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler_client;
+    sigaction(SIGINT, &sa, NULL);
+    // sigaction(SIGTERM, &sa, NULL); // Optionally handle SIGTERM too
+
+    if (!connect_client_to_server(&client_state_instance, server_ip, port)) {
+        cleanup_client_resources(&client_state_instance);
+        return EXIT_FAILURE;
+    }
+
+    if (!perform_client_login(&client_state_instance)) {
+        cleanup_client_resources(&client_state_instance);
+        return EXIT_FAILURE;
+    }
+
+    client_state_instance.connected = 1; // Set connected state after successful login
+
+    // Start the message receiver thread
+    if (pthread_create(&client_state_instance.receiver_thread_id, NULL, client_message_receiver_thread, &client_state_instance) != 0) {
+        perror("\033[31mFailed to create message receiver thread\033[0m");
+        client_state_instance.connected = 0; // Prevent input loop from starting
+        send_disconnect_signal(&client_state_instance); // Attempt to notify server
+        cleanup_client_resources(&client_state_instance);
+        return EXIT_FAILURE;
+    }
+
+    // Start user input loop in the main thread
+    handle_user_input_loop(&client_state_instance);
+    
+    // --- Shutdown sequence ---
+    client_state_instance.connected = 0; // Ensure flag is set if not already
+
+    // Signal receiver thread to stop, if it hasn't already (e.g. if input loop exited first)
+    // Closing socket_fd will make recv in receiver thread return 0 or -1
+    if (client_state_instance.socket_fd != -1) {
+         shutdown(client_state_instance.socket_fd, SHUT_RD); // Stop further receives
+    }
+
+
+    // Wait for the receiver thread to terminate
+    if (pthread_join(client_state_instance.receiver_thread_id, NULL) != 0) {
+        perror("\033[31mError joining message receiver thread\033[0m");
+    }
+    
+    // Final cleanup
+    cleanup_client_resources(&client_state_instance);
+    
+    printf("\033[36mClient disconnected. Goodbye!\033[0m\n");
+    return EXIT_SUCCESS;
+}===== client/network.c =====
+#include "common.h"
+
+int connect_client_to_server(client_state_t *client_state, const char *server_ip, int port) {
+    struct sockaddr_in server_address;
+
+    client_state->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_state->socket_fd < 0) {
+        perror("\033[31mSocket creation failed\033[0m");
+        return 0;
+    }
+
+    memset(&server_address, 0, sizeof(server_address));
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, server_ip, &server_address.sin_addr) <= 0) {
+        printf("\033[31mInvalid server IP address: %s\033[0m\n", server_ip);
+        close(client_state->socket_fd);
+        client_state->socket_fd = -1;
+        return 0;
+    }
+
+    if (connect(client_state->socket_fd, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+        printf("\033[31mConnection to server %s:%d failed: %s\033[0m\n", server_ip, port, strerror(errno));
+        close(client_state->socket_fd);
+        client_state->socket_fd = -1;
+        return 0;
+    }
+
+    printf("\033[32mSuccessfully connected to server %s:%d\033[0m\n", server_ip, port);
+    return 1;
+}
+
+int perform_client_login(client_state_t *client_state) {
+    char username_input[USERNAME_BUF_SIZE]; // Buffer for username
+
+    printf("Enter your username (alphanumeric, 1-%d chars): ", MAX_USERNAME_LEN);
+    fflush(stdout);
+
+    if (!fgets(username_input, sizeof(username_input), stdin)) {
+        printf("\033[31mFailed to read username.\033[0m\n");
+        return 0; // EOF or error
+    }
+    username_input[strcspn(username_input, "\n")] = '\0'; // Remove trailing newline
+
+    if (!is_valid_username(username_input)) {
+        printf("\033[31mInvalid username. Must be alphanumeric, 1-%d characters, no spaces.\033[0m\n", MAX_USERNAME_LEN);
+        return 0;
+    }
+
+    // Prepare login message
+    message_t login_req_msg;
+    memset(&login_req_msg, 0, sizeof(login_req_msg));
+    login_req_msg.type = MSG_LOGIN;
+    strncpy(login_req_msg.sender, username_input, USERNAME_BUF_SIZE - 1);
+
+    if (!send_message(client_state->socket_fd, &login_req_msg)) {
+        printf("\033[31mFailed to send login request to server.\033[0m\n");
+        return 0;
+    }
+
+    // Wait for server's response to login
+    message_t server_response_msg;
+    if (!receive_message(client_state->socket_fd, &server_response_msg)) {
+        printf("\033[31mNo response from server during login, or connection lost.\033[0m\n");
+        return 0;
+    }
+
+    // Check response type (using new specific types for login)
+    if (server_response_msg.type == MSG_LOGIN_SUCCESS) {
+        strncpy(client_state->username, username_input, USERNAME_BUF_SIZE -1);
+        printf("\033[32m%s\033[0m\n", server_response_msg.content); // e.g., "Login successful."
+        printf("\033[36mWelcome, %s! Type /help for commands.\033[0m\n", client_state->username);
+        return 1;
+    } else if (server_response_msg.type == MSG_LOGIN_FAILURE) {
+        printf("\033[31mLogin failed: %s\033[0m\n", server_response_msg.content);
+        return 0;
+    } else {
+        printf("\033[31mUnexpected response from server during login (type %d).\033[0m\n", server_response_msg.type);
+        return 0;
+    }
+}===== server/client_handler.c =====
+#include "common.h"
+#include <sys/select.h>
+
+// Function to allocate and initialize a new client_info_t structure
+// This is called when a new connection is accepted by the server main loop.
+client_info_t* register_new_client_on_server(int client_socket_fd, struct sockaddr_in client_address_info) {
+    client_info_t *new_client_info = malloc(sizeof(client_info_t));
+    if (!new_client_info) {
+        log_server_event("ERROR", "Memory allocation failed for new client_info_t.");
+        close(client_socket_fd); // Close the socket if we can't handle the client
+        return NULL;
+    }
+
+    memset(new_client_info, 0, sizeof(client_info_t)); // Zero out the structure
+    new_client_info->socket_fd = client_socket_fd;
+    new_client_info->client_address = client_address_info;
+    new_client_info->is_active = 1; // Mark as active, pending login
+    new_client_info->connection_time = time(NULL);
+    // Username and current_room_name are empty until login/join
+
+    // Add to global clients list (Needs protection with clients_list_mutex)
+    pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    int client_slot = -1;
+    for (int i = 0; i < MAX_SERVER_CLIENTS; ++i) {
+        if (g_server_state->connected_clients[i] == NULL) {
+            g_server_state->connected_clients[i] = new_client_info;
+            client_slot = i;
+            break;
+        }
+    }
+
+    if (client_slot == -1) { // Should have been checked by accept loop, but as a safeguard
+        pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+        log_server_event("ERROR", "No slot for new client_info_t, though accept loop should prevent this.");
+        send_error_to_client(client_socket_fd, "Server is critically overloaded. Try later.");
+        close(client_socket_fd);
+        free(new_client_info);
+        return NULL;
+    }
+    // g_server_state->active_client_count is incremented *after* successful login.
+    pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+    
+    return new_client_info;
+}
+
+
+// Handles the MSG_LOGIN message from a newly connected client.
+// Returns 1 on successful login, 0 on failure.
+int process_client_login(client_info_t *client_info, const message_t *login_message) {
+    if (!client_info || !login_message || login_message->type != MSG_LOGIN) {
+        send_error_to_client(client_info->socket_fd, "Invalid login sequence.");
+        return 0;
+    }
+
+    char client_ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_info->client_address.sin_addr, client_ip_str, INET_ADDRSTRLEN);
+
+    if (!is_valid_username(login_message->sender)) {
+        log_event_client_login_failed(login_message->sender, client_ip_str, "Invalid username format.");
+        // Use MSG_LOGIN_FAILURE for client to distinguish
+        message_t fail_msg;
+        memset(&fail_msg, 0, sizeof(fail_msg));
+        fail_msg.type = MSG_LOGIN_FAILURE;
+        strncpy(fail_msg.content, "Invalid username: Alphanumeric, 1-16 chars, no spaces.", MESSAGE_BUF_SIZE -1);
+        send_message(client_info->socket_fd, &fail_msg);
+        return 0;
+    }
+
+    pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    // Check for duplicate username
+    for (int i = 0; i < MAX_SERVER_CLIENTS; ++i) {
+        if (g_server_state->connected_clients[i] != NULL &&
+            g_server_state->connected_clients[i]->is_active && // Check if the slot is active
+            strcmp(g_server_state->connected_clients[i]->username, login_message->sender) == 0) {
+            
+            pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+            log_event_client_login_failed(login_message->sender, client_ip_str, "Username already taken.");
+            message_t fail_msg;
+            memset(&fail_msg, 0, sizeof(fail_msg));
+            fail_msg.type = MSG_LOGIN_FAILURE;
+            strncpy(fail_msg.content, "Username already taken. Choose another.", MESSAGE_BUF_SIZE -1);
+            send_message(client_info->socket_fd, &fail_msg);
+            return 0;
+        }
+    }
+
+    // Username is valid and unique, complete login
+    strncpy(client_info->username, login_message->sender, USERNAME_BUF_SIZE - 1);
+    g_server_state->active_client_count++; // Increment active count now
+    pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+
+    log_event_client_connected(client_info->username, client_ip_str);
+    
+    message_t success_msg;
+    memset(&success_msg, 0, sizeof(success_msg));
+    success_msg.type = MSG_LOGIN_SUCCESS;
+    strncpy(success_msg.content, "Login successful. Welcome!", MESSAGE_BUF_SIZE -1);
+    send_message(client_info->socket_fd, &success_msg);
+    
+    return 1;
+}
+
+
+// Main function for a dedicated thread handling a single client connection.
+void* client_connection_thread_handler(void *client_info_ptr_arg) {
+    client_info_t *client = (client_info_t *)client_info_ptr_arg;
+    message_t received_message_from_client;
+    int is_unexpected_disconnect = 1; // Assume unexpected until /exit or server shutdown
+
+    // --- Login Phase ---
+    // Client sends MSG_LOGIN first. We expect it within a certain timeout.
+    // For simplicity, we'll do a blocking read here. A robust server might use select with timeout.
+    if (receive_message(client->socket_fd, &received_message_from_client) <= 0) {
+        log_server_event("INFO", "Client disconnected before sending login message or read error.");
+        unregister_client(client, 1); // Pass true for unexpected
+        return NULL;
+    }
+
+    if (!process_client_login(client, &received_message_from_client)) {
+        // Login failed, process_client_login already sent error to client and logged.
+        unregister_client(client, 1); // Login failure is also an "unexpected" end from server's perspective
+        return NULL;
+    }
+
+    // --- Main Message Loop ---
+    while (g_server_state->server_is_running && client->is_active) {
+        // Use select for non-blocking read with timeout to check server_is_running flag
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(client->socket_fd, &read_fds);
+        struct timeval timeout = {1, 0}; // 1 second timeout
+
+        int activity = select(client->socket_fd + 1, &read_fds, NULL, NULL, &timeout);
+
+        if (!g_server_state->server_is_running || !client->is_active) { // Check flags after select
+             is_unexpected_disconnect = 0; // Server shutdown or client /exit
+             break;
+        }
+
+        if (activity < 0) {
+            if (errno == EINTR) continue; // Interrupted by signal, loop again
+            log_server_event("ERROR", "select() error for client %s: %s", client->username, strerror(errno));
+            break; // Assume connection error
+        }
+
+        if (activity == 0) { // Timeout
+            continue; // Loop to check flags and select again
+        }
+
+        // If data is available on the socket
+        if (FD_ISSET(client->socket_fd, &read_fds)) {
+            if (receive_message(client->socket_fd, &received_message_from_client) <= 0) {
+                // Client disconnected (gracefully or crash) or read error
+                if (client->is_active) { // Log only if we weren't expecting it
+                     // log_server_event("INFO", "Client %s disconnected or read error.", client->username);
+                }
+                break; 
+            }
+            // Successfully received a message, process it
+            handle_client_message(client, &received_message_from_client);
+        }
+    }
+
+    // --- Cleanup Phase ---
+    if (client->is_active && g_server_state->server_is_running) {
+        // This path means the loop broke due to an issue, not /exit or server shutdown.
+    } else if (!client->is_active) { // Client sent /exit
+        is_unexpected_disconnect = 0;
+    } else if (!g_server_state->server_is_running) { // Server is shutting down
+        is_unexpected_disconnect = 0;
+        // Server main loop will handle sending shutdown messages if not already.
+        // Or, we can send one final notification here.
+        notify_client_of_shutdown(client->socket_fd);
+    }
+
+    unregister_client(client, is_unexpected_disconnect);
+    return NULL;
+}
+
+// Routes client messages to appropriate handlers.
+void handle_client_message(client_info_t *client, const message_t *message) {
+    // PDF requirement: Log every user action with timestamps.
+    // Specific handlers will call more detailed logging.
+    // log_server_event("COMMAND_RAW", "User %s sent msg type %d", client->username, message->type);
+
+    switch (message->type) {
+        case MSG_JOIN_ROOM:
+            handle_join_room_request(client, message->room);
+            break;
+        case MSG_LEAVE_ROOM:
+            handle_leave_room_request(client);
+            break;
+        case MSG_BROADCAST:
+            handle_broadcast_request(client, message->content);
+            break;
+        case MSG_WHISPER:
+            handle_whisper_request(client, message->receiver, message->content);
+            break;
+        case MSG_FILE_TRANSFER_REQUEST: // Client wants to send a file
+            handle_file_transfer_request(client, message);
+            break;
+        case MSG_DISCONNECT:
+            client->is_active = 0; // Mark for cleanup, loop will exit
+            // Server sends final "Disconnected. Goodbye!" message
+            message_t bye_msg;
+            memset(&bye_msg, 0, sizeof(bye_msg));
+            bye_msg.type = MSG_SUCCESS; // Or a specific MSG_DISCONNECT_ACK
+            strncpy(bye_msg.content, "Disconnected. Goodbye!", MESSAGE_BUF_SIZE -1);
+            send_message(client->socket_fd, &bye_msg);
+            break;
+        // MSG_LOGIN should only be handled once at the start.
+        default:
+            log_server_event("WARNING", "Client %s sent unhandled message type: %d", client->username, message->type);
+            send_error_to_client(client->socket_fd, "Unknown or unexpected command.");
+            break;
+    }
+}
+
+// Cleans up a client's resources and removes them from server's active list.
+void unregister_client(client_info_t *client_info_to_remove, int is_unexpected_disconnect) {
+    if (!client_info_to_remove) return;
+
+    // Log disconnection (username might be empty if login failed)
+    const char* username_to_log = (strlen(client_info_to_remove->username) > 0) ? client_info_to_remove->username : "UNKNOWN_USER";
+    log_event_client_disconnected(username_to_log, is_unexpected_disconnect);
+
+    // Remove from any room they were in
+    if (strlen(client_info_to_remove->current_room_name) > 0) {
+        remove_client_from_their_room(client_info_to_remove);
+    }
+
+    // Close socket
+    if (client_info_to_remove->socket_fd >= 0) {
+        shutdown(client_info_to_remove->socket_fd, SHUT_RDWR); // Graceful shutdown of TCP connection
+        close(client_info_to_remove->socket_fd);
+        client_info_to_remove->socket_fd = -1; // Mark as closed
+    }
+    client_info_to_remove->is_active = 0; // Ensure inactive
+
+    // Remove from global clients list and decrement count
+    pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    for (int i = 0; i < MAX_SERVER_CLIENTS; ++i) {
+        if (g_server_state->connected_clients[i] == client_info_to_remove) {
+            g_server_state->connected_clients[i] = NULL; // Free up the slot
+            // Only decrement active_client_count if username was set (i.e., login was successful)
+            if (strlen(client_info_to_remove->username) > 0) {
+                 if (g_server_state->active_client_count > 0) g_server_state->active_client_count--;
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+
+    // Free the client_info_t structure itself
+    free(client_info_to_remove);
+}
+
+// Used during server shutdown sequence.
+void notify_client_of_shutdown(int client_socket_fd) {
+    message_t shutdown_notif_msg;
+    memset(&shutdown_notif_msg, 0, sizeof(shutdown_notif_msg));
+    shutdown_notif_msg.type = MSG_ERROR; // Client should interpret as critical
+    strncpy(shutdown_notif_msg.sender, "SERVER", USERNAME_BUF_SIZE -1);
+    strncpy(shutdown_notif_msg.content, "Server is shutting down. Disconnecting.", MESSAGE_BUF_SIZE - 1);
+    send_message(client_socket_fd, &shutdown_notif_msg); // Best effort
+}===== server/common.h =====
+#ifndef SERVER_COMMON_H
+#define SERVER_COMMON_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>      // For O_WRONLY etc. in logging
+#include <sys/stat.h>   // For mode_t in open
+#include <sys/types.h>  // For mode_t
+
+#include "../shared/protocol.h" // Shared message structures and constants
+#include "../shared/utils.h"    // Shared utility functions
+
+// Server-specific limits
+#define MAX_SERVER_CLIENTS 30    // PDF: "Supports at least 15 concurrent clients", test scenario "At least 30 clients"
+#define MAX_ROOMS MAX_SERVER_CLIENTS // Max rooms can be same as max clients, or a different value
+#define MAX_MEMBERS_PER_ROOM 15  // PDF constraint
+#define MAX_UPLOAD_QUEUE_SIZE 5 // PDF constraint
+#define SERVER_LOG_FILENAME "server.log"
+
+
+// Client structure (server-side representation)
+typedef struct {
+    int socket_fd;
+    char username[USERNAME_BUF_SIZE];
+    char current_room_name[ROOM_NAME_BUF_SIZE];
+    struct sockaddr_in client_address;
+    pthread_t thread_id;
+    volatile int is_active; // Client connection is active
+    time_t connection_time;
+} client_info_t;
+
+// Room structure
+typedef struct {
+    char name[ROOM_NAME_BUF_SIZE];
+    client_info_t* members[MAX_MEMBERS_PER_ROOM]; // Pointers to client_info_t structs
+    int member_count;
+    pthread_mutex_t room_lock; // Mutex to protect this room's member list
+} chat_room_t;
+
+// File transfer request in the server's queue
+typedef struct file_transfer_task {
+    char filename[FILENAME_BUF_SIZE];
+    char sender_username[USERNAME_BUF_SIZE];
+    char receiver_username[USERNAME_BUF_SIZE];
+    size_t file_size;
+    char *file_data_buffer;    // Server holds the data in memory while queued
+    time_t enqueue_timestamp;
+    struct file_transfer_task *next_task;
+} file_transfer_task_t;
+
+// File transfer queue
+typedef struct {
+    file_transfer_task_t *head;
+    file_transfer_task_t *tail;
+    int current_queue_length;
+    // int active_transfers; // Tracked by semaphore count
+    pthread_mutex_t queue_access_mutex;
+    pthread_cond_t queue_not_empty_cond; // Signal when a new item is added
+    sem_t available_upload_slots_sem; // Limits concurrent file processing
+} file_upload_queue_t;
+
+// Overall Server State
+typedef struct {
+    client_info_t *connected_clients[MAX_SERVER_CLIENTS]; // Array of pointers to client_info_t
+    chat_room_t chat_rooms[MAX_ROOMS];         // Array of chat_room_t structs
+    
+    int active_client_count;
+    int current_room_count;
+    
+    file_upload_queue_t file_transfer_manager;
+
+    pthread_mutex_t clients_list_mutex; // Protects connected_clients array and active_client_count
+    pthread_mutex_t rooms_list_mutex;   // Protects chat_rooms array and current_room_count
+
+    int server_listen_socket_fd;
+    volatile int server_is_running; // Flag to control main server loop and threads
+    pthread_t file_worker_thread_ids[MAX_UPLOAD_QUEUE_SIZE]; // Can have multiple worker threads
+} server_main_state_t;
+
+// Global server state instance (declaration)
+extern server_main_state_t *g_server_state;
+
+
+// --- Function Declarations ---
+
+// server/main.c
+void initialize_server_state(void);
+int setup_server_listening_socket(int port);
+void accept_client_connections_loop(void);
+void cleanup_server_resources(void);
+void sigint_shutdown_handler(int signal_number);
+
+// server/client_handler.c
+void* client_connection_thread_handler(void *client_info_ptr_arg);
+client_info_t* register_new_client_on_server(int client_socket_fd, struct sockaddr_in client_address);
+int process_client_login(client_info_t *client_info, const message_t *login_message);
+void handle_client_message(client_info_t *client_info, const message_t *message);
+void unregister_client(client_info_t *client_info, int is_unexpected_disconnect);
+void notify_client_of_shutdown(int client_socket_fd);
+
+
+// server/room_manager.c
+void initialize_room_system(void);
+chat_room_t* find_or_create_chat_room(const char *room_name_to_find);
+int add_client_to_room(client_info_t *client, chat_room_t *room);
+void remove_client_from_their_room(client_info_t *client); // Removes from client->current_room_name
+void handle_join_room_request(client_info_t *client, const char *room_name_requested);
+void handle_leave_room_request(client_info_t *client);
+void handle_broadcast_request(client_info_t *client_sender, const char *message_content);
+void handle_whisper_request(client_info_t *client_sender, const char *receiver_username, const char *message_content);
+void broadcast_message_to_room_members(chat_room_t *room, const message_t *message_to_send, const char *exclude_username);
+
+
+// server/file_transfer.c
+void initialize_file_transfer_system(void);
+void* file_processing_worker_thread(void *arg); // Worker thread function
+void handle_file_transfer_request(client_info_t *sender_client, const message_t *file_req_header);
+int add_file_to_upload_queue(const char *filename, const char *sender_user, const char *receiver_user,
+                             char *actual_file_data, size_t file_size_val);
+file_transfer_task_t* get_next_file_from_queue(void);
+void execute_file_transfer_to_recipient(file_transfer_task_t *task);
+void cleanup_file_transfer_system(void);
+
+
+// server/logging.c
+int initialize_server_logging(const char* log_filename);
+void finalize_server_logging(void);
+void log_server_event(const char* tag, const char* details_format, ...);
+// Specific logging helpers that call log_server_event
+void log_event_server_start(int port);
+void log_event_client_connected(const char* username, const char* ip_address);
+void log_event_client_disconnected(const char* username, int is_unexpected);
+void log_event_client_login_failed(const char* username_attempted, const char* ip_addr, const char* reason);
+void log_event_room_created(const char* room_name);
+void log_event_client_joined_room(const char* username, const char* room_name);
+void log_event_client_left_room(const char* username, const char* room_name);
+void log_event_client_switched_room(const char* username, const char* old_room, const char* new_room);
+void log_event_broadcast(const char* sender_username, const char* room_name, const char* message_preview);
+void log_event_whisper(const char* sender_username, const char* receiver_username); // Msg content not logged per PDF
+void log_event_file_transfer_initiated(const char* sender_username, const char* receiver_username, const char* filename);
+void log_event_file_queued(const char* sender_username, const char* filename, int current_q_size);
+void log_event_file_rejected_oversized(const char* sender_username, const char* filename, size_t attempted_size);
+void log_event_file_transfer_processing_start(const char* sender_username, const char* filename, long wait_time_seconds);
+void log_event_file_transfer_completed(const char* sender_username, const char* receiver_username, const char* filename);
+void log_event_file_transfer_failed(const char* sender_username, const char* receiver_username, const char* filename, const char* reason);
+void log_event_sigint_shutdown(int num_clients_at_shutdown);
+
+
+// server/utils_server.c (server-specific utilities)
+client_info_t* find_client_by_socket(int socket_fd); // If needed
+client_info_t* find_client_by_username(const char *username_to_find);
+void send_error_to_client(int client_socket_fd, const char *error_message);
+void send_success_to_client(int client_socket_fd, const char *success_message);
+// Sends success with room context, useful for join
+void send_success_with_room_to_client(int client_socket_fd, const char* message, const char* room_name);
+
+
+#endif // SERVER_COMMON_H===== server/file_transfer.c =====
+#include "common.h"
+
+void initialize_file_transfer_system() {
+    file_upload_queue_t *ftm = &g_server_state->file_transfer_manager;
+    memset(ftm, 0, sizeof(file_upload_queue_t));
+
+    if (pthread_mutex_init(&ftm->queue_access_mutex, NULL) != 0 ||
+        pthread_cond_init(&ftm->queue_not_empty_cond, NULL) != 0) {
+        log_server_event("CRITICAL", "Failed to initialize mutex/condvar for file transfer queue.");
+        // Server should probably exit if these critical components fail.
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize semaphore for MAX_UPLOAD_QUEUE_SIZE concurrent processing slots
+    if (sem_init(&ftm->available_upload_slots_sem, 0, MAX_UPLOAD_QUEUE_SIZE) != 0) {
+        log_server_event("CRITICAL", "Failed to initialize file upload semaphore: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    // Create worker threads (as per MAX_UPLOAD_QUEUE_SIZE)
+    for (int i = 0; i < MAX_UPLOAD_QUEUE_SIZE; ++i) {
+        if (pthread_create(&g_server_state->file_worker_thread_ids[i], NULL, file_processing_worker_thread, NULL) != 0) {
+            log_server_event("CRITICAL", "Failed to create file worker thread %d: %s", i, strerror(errno));
+            // Handle partial creation failure? For now, exit.
+            exit(EXIT_FAILURE);
+        }
+        // Detach or join later. For continuous workers, detach is common.
+        // For this project, we might join them on shutdown. Let's plan to join.
+    }
+
+    log_server_event("INFO", "File transfer system initialized with %d worker thread(s).", MAX_UPLOAD_QUEUE_SIZE);
+}
+
+void cleanup_file_transfer_system() {
+    file_upload_queue_t *ftm = &g_server_state->file_transfer_manager;
+    log_server_event("INFO", "Cleaning up file transfer system...");
+
+    // Signal all worker threads to terminate by setting server_is_running to 0
+    // and broadcasting on the condition variable.
+    // (server_is_running is handled by main server shutdown)
+
+    pthread_mutex_lock(&ftm->queue_access_mutex);
+    pthread_cond_broadcast(&ftm->queue_not_empty_cond); // Wake up any waiting workers
+    pthread_mutex_unlock(&ftm->queue_access_mutex);
+
+    // Post to semaphore enough times to unblock any waiting workers if server_is_running is false
+    for (int i = 0; i < MAX_UPLOAD_QUEUE_SIZE; ++i) {
+        sem_post(&ftm->available_upload_slots_sem);
+    }
+
+
+    for (int i = 0; i < MAX_UPLOAD_QUEUE_SIZE; ++i) {
+        if (g_server_state->file_worker_thread_ids[i] != 0) { // Check if thread was created
+            if (pthread_join(g_server_state->file_worker_thread_ids[i], NULL) != 0) {
+                log_server_event("ERROR", "Failed to join file worker thread %d: %s", i, strerror(errno));
+            }
+        }
+    }
+    log_server_event("INFO", "All file worker threads joined.");
+
+    // Clear any remaining items in the queue (freeing their data)
+    pthread_mutex_lock(&ftm->queue_access_mutex);
+    file_transfer_task_t *current_task = ftm->head;
+    while (current_task != NULL) {
+        file_transfer_task_t *next_task = current_task->next_task;
+        log_server_event("INFO", "Discarding queued file '%s' for %s due to shutdown.",
+                         current_task->filename, current_task->receiver_username);
+        if (current_task->file_data_buffer) {
+            free(current_task->file_data_buffer);
+        }
+        free(current_task);
+        current_task = next_task;
+    }
+    ftm->head = ftm->tail = NULL;
+    ftm->current_queue_length = 0;
+    pthread_mutex_unlock(&ftm->queue_access_mutex);
+
+    pthread_mutex_destroy(&ftm->queue_access_mutex);
+    pthread_cond_destroy(&ftm->queue_not_empty_cond);
+    sem_destroy(&ftm->available_upload_slots_sem);
+    log_server_event("INFO", "File transfer system resources released.");
+}
+
+// Client has sent MSG_FILE_TRANSFER_REQUEST and the full file data.
+// This function handles receiving that data and queuing the transfer.
+void handle_file_transfer_request(client_info_t *sender_client, const message_t *file_req_header) {
+    log_event_file_transfer_initiated(sender_client->username, file_req_header->receiver, file_req_header->filename);
+
+    if (!is_valid_file_type(file_req_header->filename)) {
+        send_error_to_client(sender_client->socket_fd, "Invalid file type. Supported: .txt, .pdf, .jpg, .png");
+        return;
+    }
+    if (file_req_header->file_size == 0) {
+        send_error_to_client(sender_client->socket_fd, "Cannot transfer an empty file.");
+        return;
+    }
+    if (file_req_header->file_size > MAX_FILE_SIZE) {
+        log_event_file_rejected_oversized(sender_client->username, file_req_header->filename, file_req_header->file_size);
+        char err_msg[350];
+        snprintf(err_msg, sizeof(err_msg), "File '%.50s' is too large (max %dMB).", file_req_header->filename, MAX_FILE_SIZE / (1024 * 1024));
+        send_error_to_client(sender_client->socket_fd, err_msg);
+        // Client already sent data, server now has to "consume" it or close connection.
+        // For simplicity, if file is too large, we tell client, but the data was already sent.
+        // A more robust protocol would have client send header, server ACKs size, then client sends data.
+        // Here, we just don't queue it. The received data is implicitly discarded since we don't read it into a buffer yet.
+        // CORRECTION: The client *does* send data right after header. Server must read it.
+        return; 
+    }
+
+    pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    client_info_t *receiver_client = find_client_by_username(file_req_header->receiver);
+    pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+
+    if (!receiver_client || !receiver_client->is_active) {
+        send_error_to_client(sender_client->socket_fd, "Recipient user not found or is offline.");
+        // Data was sent by client, server needs to "read and discard" file_req_header->file_size bytes.
+        // This simple implementation assumes the client handler will eventually read it or disconnect.
+        // For robustness, the server should actively read and discard the already-sent data.
+        // Let's simulate that here by reading it into a temporary buffer and freeing.
+        char *temp_discard_buffer = malloc(file_req_header->file_size);
+        if (temp_discard_buffer) {
+            size_t discarded_bytes = 0;
+            while(discarded_bytes < file_req_header->file_size) {
+                ssize_t recvd = recv(sender_client->socket_fd, temp_discard_buffer + discarded_bytes, file_req_header->file_size - discarded_bytes, 0);
+                if (recvd <=0) break; // Error or client closed
+                discarded_bytes += recvd;
+            }
+            free(temp_discard_buffer);
+        }
+        return;
+    }
+     if (strcmp(sender_client->username, file_req_header->receiver) == 0) {
+        send_error_to_client(sender_client->socket_fd, "You cannot send a file to yourself.");
+        // Similar discard logic as above for already sent data.
+        return; // Already handled client-side, but good server-side check
+    }
+
+
+    // Allocate buffer and receive file data from sender client
+    // This happens *after* the MSG_FILE_TRANSFER_REQUEST header was already received by client_handler.
+    // The client sends data immediately after its header.
+    char *actual_file_data_buffer = malloc(file_req_header->file_size);
+    if (!actual_file_data_buffer) {
+        log_server_event("ERROR", "Memory allocation failed for file data buffer (%s from %s, size %zu)",
+                         file_req_header->filename, sender_client->username, file_req_header->file_size);
+        send_error_to_client(sender_client->socket_fd, "Server internal error (memory for file). Try again later.");
+        // Client might be stuck if it sent data. Robust server would attempt to read and discard.
+        return;
+    }
+
+    size_t total_bytes_received = 0;
+    while (total_bytes_received < file_req_header->file_size) {
+        ssize_t bytes_in_chunk = recv(sender_client->socket_fd, 
+                                      actual_file_data_buffer + total_bytes_received,
+                                      file_req_header->file_size - total_bytes_received, 0);
+        if (bytes_in_chunk <= 0) {
+            log_server_event("FILE_ERROR", "Failed to receive full file data for '%s' from %s (got %zu/%zu bytes). Connection issue?",
+                             file_req_header->filename, sender_client->username, total_bytes_received, file_req_header->file_size);
+            free(actual_file_data_buffer);
+            // No error message to client here as connection might be dead. Client handler will deal with disconnect.
+            return;
+        }
+        total_bytes_received += bytes_in_chunk;
+    }
+
+    // If all data received, attempt to enqueue
+    if (add_file_to_upload_queue(file_req_header->filename, sender_client->username, 
+                                 file_req_header->receiver, actual_file_data_buffer, file_req_header->file_size)) {
+        // PDF example: "[Server]: File added to the upload queue."
+        message_t queue_ack_msg;
+        memset(&queue_ack_msg,0,sizeof(message_t));
+        queue_ack_msg.type = MSG_FILE_TRANSFER_ACCEPT; // Client expects this for success
+        strncpy(queue_ack_msg.content, "File added to the upload queue.", MESSAGE_BUF_SIZE -1);
+        strncpy(queue_ack_msg.filename, file_req_header->filename, FILENAME_BUF_SIZE -1); // Echo filename
+        send_message(sender_client->socket_fd, &queue_ack_msg);
+
+    } else {
+        // Enqueue failed (e.g., queue struct error, though not queue full, that's a worker concern)
+        log_server_event("ERROR", "Server failed to enqueue file '%s' from %s internally.",
+                         file_req_header->filename, sender_client->username);
+        send_error_to_client(sender_client->socket_fd, "Server error: Could not queue file. Please try again.");
+        free(actual_file_data_buffer); // Free data if not enqueued
+    }
+}
+
+// Adds a file transfer task to the server's processing queue.
+// Takes ownership of actual_file_data buffer if successful.
+int add_file_to_upload_queue(const char *filename, const char *sender_user, const char *receiver_user,
+                             char *actual_file_data, size_t file_size_val) {
+    file_transfer_task_t *new_task = malloc(sizeof(file_transfer_task_t));
+    if (!new_task) {
+        log_server_event("ERROR", "Memory allocation failed for file_transfer_task_t.");
+        return 0; // Failure, caller must free actual_file_data
+    }
+
+    strncpy(new_task->filename, filename, FILENAME_BUF_SIZE - 1);
+    strncpy(new_task->sender_username, sender_user, USERNAME_BUF_SIZE - 1);
+    strncpy(new_task->receiver_username, receiver_user, USERNAME_BUF_SIZE - 1);
+    new_task->file_size = file_size_val;
+    new_task->file_data_buffer = actual_file_data; // Ownership transferred
+    new_task->enqueue_timestamp = time(NULL);
+    new_task->next_task = NULL;
+
+    file_upload_queue_t *ftm = &g_server_state->file_transfer_manager;
+    pthread_mutex_lock(&ftm->queue_access_mutex);
+    if (ftm->tail == NULL) { // Queue is empty
+        ftm->head = ftm->tail = new_task;
+    } else {
+        ftm->tail->next_task = new_task;
+        ftm->tail = new_task;
+    }
+    ftm->current_queue_length++;
+    int q_len = ftm->current_queue_length; // For logging
+    
+    pthread_cond_signal(&ftm->queue_not_empty_cond); // Signal a worker thread
+    pthread_mutex_unlock(&ftm->queue_access_mutex);
+
+    log_event_file_queued(sender_user, filename, q_len);
+    return 1; // Success
+}
+
+
+// Worker thread function to process files from the queue.
+void* file_processing_worker_thread(void *arg) {
+    (void)arg; // Unused
+    log_server_event("INFO", "File worker thread (ID %lu) started.", (unsigned long)pthread_self());
+
+    file_upload_queue_t *ftm = &g_server_state->file_transfer_manager;
+
+    while (g_server_state->server_is_running) {
+        // Wait for an available processing slot (from semaphore)
+        // Use sem_timedwait to periodically check server_is_running
+        struct timespec timeout;
+        if (clock_gettime(CLOCK_REALTIME, &timeout) == -1) {
+            log_server_event("ERROR", "Worker %lu: clock_gettime failed.", (unsigned long)pthread_self());
+            sleep(1); // Sleep briefly and retry
+            continue;
+        }
+        timeout.tv_sec += 1; // 1 second timeout for sem_timedwait
+
+        int sem_ret = sem_timedwait(&ftm->available_upload_slots_sem, &timeout);
+        if (!g_server_state->server_is_running) break; // Check immediately after timed wait
+
+        if (sem_ret == -1) {
+            if (errno == EINTR) continue; // Interrupted, loop
+            if (errno == ETIMEDOUT) continue; // Timeout, loop to check server_is_running
+            log_server_event("ERROR", "Worker %lu: sem_timedwait error: %s", (unsigned long)pthread_self(), strerror(errno));
+            break; // Other semaphore error
+        }
+        // Acquired a slot from semaphore
+
+        file_transfer_task_t *task_to_process = NULL;
+        pthread_mutex_lock(&ftm->queue_access_mutex);
+        while (ftm->head == NULL && g_server_state->server_is_running) {
+            // Wait if queue is empty
+            pthread_cond_wait(&ftm->queue_not_empty_cond, &ftm->queue_access_mutex);
+        }
+
+        if (!g_server_state->server_is_running) { // Check again after waking up
+            pthread_mutex_unlock(&ftm->queue_access_mutex);
+            sem_post(&ftm->available_upload_slots_sem); // Release slot if shutting down
+            break;
+        }
+
+        if (ftm->head != NULL) {
+            task_to_process = ftm->head;
+            ftm->head = ftm->head->next_task;
+            if (ftm->head == NULL) {
+                ftm->tail = NULL; // Queue became empty
+            }
+            ftm->current_queue_length--;
+        }
+        pthread_mutex_unlock(&ftm->queue_access_mutex);
+
+        if (task_to_process) {
+            long wait_duration = (long)difftime(time(NULL), task_to_process->enqueue_timestamp);
+            log_event_file_transfer_processing_start(task_to_process->sender_username, task_to_process->filename, wait_duration);
+            
+            execute_file_transfer_to_recipient(task_to_process); // This does the actual sending
+
+            // Free resources for this task
+            if (task_to_process->file_data_buffer) {
+                free(task_to_process->file_data_buffer);
+            }
+            free(task_to_process);
+            task_to_process = NULL;
+
+            sem_post(&ftm->available_upload_slots_sem); // Release the processing slot
+        } else {
+             // Woke up but queue was empty (e.g. spurious wakeup or another worker got it)
+             // Or server shutting down and queue is empty
+            sem_post(&ftm->available_upload_slots_sem); // Release slot if no task taken
+        }
+    }
+    log_server_event("INFO", "File worker thread (ID %lu) stopping.", (unsigned long)pthread_self());
+    return NULL;
+}
+
+// Sends the file data to the recipient client.
+void execute_file_transfer_to_recipient(file_transfer_task_t *task) {
+    pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    client_info_t *recipient = find_client_by_username(task->receiver_username);
+    // Make a copy of necessary fields if recipient can be freed while we use it
+    int recipient_socket_fd = -1;
+    if (recipient && recipient->is_active) {
+        recipient_socket_fd = recipient->socket_fd;
+    }
+    pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+
+    if (recipient_socket_fd == -1) {
+        log_event_file_transfer_failed(task->sender_username, task->receiver_username, task->filename, "Recipient offline or not found during transfer.");
+        return;
+    }
+
+    // 1. Send MSG_FILE_TRANSFER_DATA header to recipient
+    message_t file_data_header;
+    memset(&file_data_header, 0, sizeof(file_data_header));
+    file_data_header.type = MSG_FILE_TRANSFER_DATA;
+    strncpy(file_data_header.sender, task->sender_username, USERNAME_BUF_SIZE - 1);
+    strncpy(file_data_header.receiver, task->receiver_username, USERNAME_BUF_SIZE - 1); // For recipient's context
+    strncpy(file_data_header.filename, task->filename, FILENAME_BUF_SIZE - 1);
+    file_data_header.file_size = task->file_size;
+
+    if (!send_message(recipient_socket_fd, &file_data_header)) {
+        log_event_file_transfer_failed(task->sender_username, task->receiver_username, task->filename, "Failed to send file header to recipient.");
+        return;
+    }
+
+    // 2. Send actual file data in chunks
+    size_t total_bytes_sent = 0;
+    char *current_data_ptr = task->file_data_buffer;
+    while (total_bytes_sent < task->file_size) {
+        size_t bytes_to_send_this_chunk = task->file_size - total_bytes_sent;
+        // You might want to cap chunk size, e.g., to 4096, but for memory-to-socket, larger can be fine
+        // if (bytes_to_send_this_chunk > SOME_CHUNK_SIZE) bytes_to_send_this_chunk = SOME_CHUNK_SIZE;
+
+        ssize_t bytes_sent_now = send(recipient_socket_fd, current_data_ptr, bytes_to_send_this_chunk, 0);
+        if (bytes_sent_now <= 0) {
+            log_event_file_transfer_failed(task->sender_username, task->receiver_username, task->filename, "Socket error while sending file data to recipient.");
+            return; // Recipient likely disconnected
+        }
+        total_bytes_sent += bytes_sent_now;
+        current_data_ptr += bytes_sent_now;
+    }
+
+    if (total_bytes_sent == task->file_size) {
+        log_event_file_transfer_completed(task->sender_username, task->receiver_username, task->filename);
+        // Optionally, notify sender of successful delivery if protocol supports it.
+        // For now, client gets "added to queue", implies server will handle it.
+    } else {
+        // This case should ideally not be reached if send loop logic is correct and socket errors handled
+        log_event_file_transfer_failed(task->sender_username, task->receiver_username, task->filename, "Incomplete data sent to recipient.");
+    }
+}===== server/logging.c =====
+#include "common.h"
+#include <stdarg.h> // For va_list, va_start, va_end
+#include <fcntl.h>  // For open flags
+#include <sys/stat.h> // For open modes
+
+static int log_file_fd = -1;
+static pthread_mutex_t server_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int initialize_server_logging(const char* log_filename) {
+    // Open with O_APPEND to add to existing log, O_CREAT to create if not exists
+    // O_WRONLY for write-only access.
+    // Mode 0644: user can read/write, group/others can read.
+    log_file_fd = open(log_filename, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    if (log_file_fd < 0) {
+        perror("CRITICAL: Failed to open server log file");
+        // Depending on policy, server might exit or try to run without file logging.
+        // For this project, failing to open log is critical.
+        return 0; // Failure
+    }
+    log_server_event("INFO", "Server logging system initialized. Log file: %s", log_filename);
+    return 1; // Success
+}
+
+void finalize_server_logging(void) {
+    log_server_event("INFO", "Server logging system shutting down.");
+    if (log_file_fd >= 0) {
+        // fsync(log_file_fd); // Ensure all buffered data is written (optional, close usually handles)
+        close(log_file_fd);
+        log_file_fd = -1;
+    }
+    pthread_mutex_destroy(&server_log_mutex); // Clean up mutex
+}
+
+// Generic logging function, thread-safe
+void log_server_event(const char* tag, const char* details_format, ...) {
+    char log_entry_buffer[1500]; // Reasonably sized buffer for log entries
+    char timestamp_buffer[64];
+    time_t now;
+    struct tm *local_time_info;
+
+    time(&now);
+    local_time_info = localtime(&now);
+
+    // Format timestamp: YYYY-MM-DD HH:MM:SS
+    strftime(timestamp_buffer, sizeof(timestamp_buffer), "%Y-%m-%d %H:%M:%S", local_time_info);
+
+    // Start building the log entry: "TIMESTAMP - [TAG] "
+    int current_len = snprintf(log_entry_buffer, sizeof(log_entry_buffer), "%s - [%s] ", timestamp_buffer, tag);
+
+    // Append the variable part of the message
+    va_list args;
+    va_start(args, details_format);
+    // Check if there's enough space before vsnprintf
+    if (current_len < (int)sizeof(log_entry_buffer)) {
+         vsnprintf(log_entry_buffer + current_len, sizeof(log_entry_buffer) - current_len, details_format, args);
+    }
+    va_end(args);
+
+    // Ensure newline at the end
+    // Find end of string, append newline if not present and space allows
+    current_len = strlen(log_entry_buffer);
+    if (current_len > 0 && current_len < (int)sizeof(log_entry_buffer) -1 && log_entry_buffer[current_len-1] != '\n') {
+        log_entry_buffer[current_len] = '\n';
+        log_entry_buffer[current_len+1] = '\0';
+    }
+
+
+    pthread_mutex_lock(&server_log_mutex);
+    // Write to console
+    printf("%s", log_entry_buffer); 
+    fflush(stdout); // Ensure console output is immediate
+
+    // Write to log file if open
+    if (log_file_fd >= 0) {
+        ssize_t bytes_written = write(log_file_fd, log_entry_buffer, strlen(log_entry_buffer));
+        if (bytes_written < 0) {
+            // perror("Error writing to server log file"); // Avoid recursive logging calls
+            fprintf(stderr, "Error writing to server log file: %s\n", strerror(errno));
+        } else {
+             fsync(log_file_fd); // Ensure critical logs are written to disk
+        }
+    }
+    pthread_mutex_unlock(&server_log_mutex);
+}
+
+
+// --- Specific Log Event Helpers ---
+// These functions format messages according to PDF examples and call log_server_event.
+
+void log_event_server_start(int port) {
+    // PDF example: [INFO] Server listening on port 5000...
+    log_server_event("INFO", "Server listening on port %d...", port);
+}
+
+void log_event_client_connected(const char* username, const char* ip_address) {
+    // PDF examples:
+    // [CONNECT] New client connected: emre2025 from 192.168.1.104 (initial connection, username might not be known yet)
+    // [LOGIN] user 'john45' connected from 192.168.1.44 (after successful login)
+    // This function is called *after* successful login, so we use the [LOGIN] format.
+    log_server_event("LOGIN", "user '%s' connected from %s", username, ip_address);
+}
+
+void log_event_client_disconnected(const char* username, int is_unexpected) {
+    if (is_unexpected) {
+        // PDF: [DISCONNECT] user 'mehmet1' lost connection. Cleaned up resources.
+        log_server_event("DISCONNECT", "user '%s' lost connection. Cleaned up resources.", username);
+    } else {
+        // PDF: [DISCONNECT] Client emre2025 disconnected.
+        log_server_event("DISCONNECT", "Client %s disconnected.", username);
+    }
+}
+
+void log_event_client_login_failed(const char* username_attempted, const char* ip_addr, const char* reason) {
+    if (strstr(reason, "Duplicate") || strstr(reason, "already taken")) {
+        // PDF: [REJECTED] Duplicate username attempted: ali34
+        log_server_event("REJECTED", "Duplicate username attempted: %s (from %s)", username_attempted, ip_addr);
+    } else {
+        // Generic login failure
+        log_server_event("LOGIN_FAIL", "Login failed for '%s' (from %s): %s", username_attempted, ip_addr, reason);
+    }
+}
+
+void log_event_room_created(const char* room_name) {
+    log_server_event("ROOM_MGMT", "Room '%s' created.", room_name);
+}
+
+void log_event_client_joined_room(const char* username, const char* room_name) {
+    // PDF (page 4): [COMMAND] emre2025 joined room 'teamchat'
+    // PDF (page 3): [JOIN] user 'john45' joined room 'team1'
+    // Using [COMMAND] format as it's more generic for user actions.
+    log_server_event("COMMAND", "%s joined room '%s'", username, room_name);
+}
+
+void log_event_client_left_room(const char* username, const char* room_name) {
+    // Implied by room switching log, or just a generic command.
+    log_server_event("COMMAND", "%s left room '%s'", username, room_name);
+}
+
+void log_event_client_switched_room(const char* username, const char* old_room, const char* new_room) {
+    // PDF: [ROOM] user 'irem56' left room 'groupA', joined 'groupB'
+    log_server_event("ROOM", "user '%s' left room '%s', joined '%s'", username, old_room, new_room);
+}
+
+void log_event_broadcast(const char* sender_username, const char* room_name, const char* message_preview) {
+    // PDF: [COMMAND] emre2025 broadcasted to 'teamchat'
+    // PDF: [BROADCAST] ali34: Hello all (message content included, also a test scenario example)
+    // We'll use the COMMAND format for action, content can be in preview.
+    // A truncated preview to avoid overly long log lines.
+    char preview[51]; // 50 chars + null
+    strncpy(preview, message_preview, 50);
+    preview[50] = '\0';
+    if (strlen(message_preview) > 50) strcat(preview, "...");
+    log_server_event("COMMAND", "%s broadcasted to '%s' (msg: \"%s\")", sender_username, room_name, preview);
+}
+
+void log_event_whisper(const char* sender_username, const char* receiver_username) {
+    // PDF: [COMMAND] emre2025 sent whisper to john42 (message content not in this specific log example)
+    log_server_event("COMMAND", "%s sent whisper to %s", sender_username, receiver_username);
+}
+
+void log_event_file_transfer_initiated(const char* sender_username, const char* receiver_username, const char* filename) {
+    // PDF: [COMMAND] emre2025 initiated file transfer to john42 (filename not in this particular log example)
+    // PDF: [SEND FILE] 'project.pdf' sent from john45 to alice99 (success) (This one is more specific and seems client-side or success log)
+    // The COMMAND log seems appropriate for the server action of *receiving* the initiation.
+    log_server_event("COMMAND", "%s initiated file transfer of '%s' to %s", sender_username, filename, receiver_username);
+}
+
+void log_event_file_queued(const char* sender_username, const char* filename, int current_q_size) {
+    // PDF: [FILE-QUEUE] Upload 'project.pdf' from emre02 added to queue. Queue size: 5
+    log_server_event("FILE-QUEUE", "Upload '%s' from %s added to queue. Queue size: %d", filename, sender_username, current_q_size);
+}
+
+void log_event_file_rejected_oversized(const char* sender_username, const char* filename, size_t attempted_size) {
+    // PDF: [ERROR] File 'huge_data.zip' from user 'melis22' exceeds size limit.
+    log_server_event("ERROR", "File '%s' from user '%s' exceeds size limit (attempted: %zu bytes, max: %d bytes).", 
+                     filename, sender_username, attempted_size, MAX_FILE_SIZE);
+}
+
+void log_event_file_transfer_processing_start(const char* sender_username, const char* filename, long wait_time_seconds) {
+    // PDF: [FILE] 'code.zip' from user 'berkay98' started upload after 14 seconds in queue.
+    log_server_event("FILE", "'%s' from user '%s' started processing after %ld seconds in queue.", 
+                     filename, sender_username, wait_time_seconds);
+}
+
+void log_event_file_transfer_completed(const char* sender_username, const char* receiver_username, const char* filename) {
+     // This is a server-side log indicating successful transmission to the recipient client.
+     // The client-side /sendfile success log: [SEND FILE] 'project.pdf' sent from john45 to alice99 (success)
+     // This log can be similar but from server perspective.
+    log_server_event("FILE", "Successfully transferred '%s' from %s to %s.",
+                     filename, sender_username, receiver_username);
+}
+
+void log_event_file_transfer_failed(const char* sender_username, const char* receiver_username, const char* filename, const char* reason) {
+    log_server_event("FILE_ERROR", "Failed to transfer '%s' from %s to %s. Reason: %s",
+                     filename, sender_username, receiver_username, reason);
+}
+
+
+void log_event_sigint_shutdown(int num_clients_at_shutdown) {
+    // PDF: [SHUTDOWN] SIGINT received. Disconnecting 12 clients, saving logs.
+    log_server_event("SHUTDOWN", "SIGINT received. Disconnecting %d client(s), saving logs.", num_clients_at_shutdown);
+}===== server/main.c =====
+#include "common.h"
+
+// Define global server state instance
+server_main_state_t *g_server_state = NULL;
+
+void sigint_shutdown_handler(int signal_number) {
+    if (signal_number == SIGINT && g_server_state && g_server_state->server_is_running) {
+        // Use a more direct log without client count yet, as it might change during shutdown
+        log_server_event("SHUTDOWN", "SIGINT received. Initiating graceful server shutdown...");
+        
+        g_server_state->server_is_running = 0; // Signal all threads to stop
+
+        // Close the listening socket to prevent new connections
+        if (g_server_state->server_listen_socket_fd >= 0) {
+            shutdown(g_server_state->server_listen_socket_fd, SHUT_RDWR); // Stop accepting
+            close(g_server_state->server_listen_socket_fd);
+            g_server_state->server_listen_socket_fd = -1; // Mark as closed
+        }
+        
+        // File transfer system cleanup will be called by cleanup_server_resources,
+        // which will signal and join worker threads.
+        // The g_server_state->server_is_running = 0 will make worker loops exit.
+        // Broadcasting on condvar and posting to semaphore helps them wake up to check.
+        pthread_mutex_lock(&g_server_state->file_transfer_manager.queue_access_mutex);
+        pthread_cond_broadcast(&g_server_state->file_transfer_manager.queue_not_empty_cond);
+        pthread_mutex_unlock(&g_server_state->file_transfer_manager.queue_access_mutex);
+        for(int i=0; i < MAX_UPLOAD_QUEUE_SIZE; ++i) { // Unblock any sem_wait
+            sem_post(&g_server_state->file_transfer_manager.available_upload_slots_sem);
+        }
+
+
+        // Client threads will also see server_is_running = 0 and start exiting.
+        // The main accept_client_connections_loop will exit too.
+        // Actual client disconnection and resource cleanup happens in cleanup_server_resources.
+    }
+}
+
+
+void initialize_server_state() {
+    g_server_state = malloc(sizeof(server_main_state_t));
+    if (!g_server_state) {
+        // No logging system yet, so use stderr.
+        fprintf(stderr, "CRITICAL: Failed to allocate memory for server_main_state_t. Exiting.\n");
+        exit(EXIT_FAILURE);
+    }
+    memset(g_server_state, 0, sizeof(server_main_state_t)); // Zero out all members
+
+    g_server_state->server_is_running = 1;
+    g_server_state->active_client_count = 0;
+    g_server_state->current_room_count = 0;
+    g_server_state->server_listen_socket_fd = -1; // Initialize to invalid
+
+    // Initialize top-level mutexes
+    if (pthread_mutex_init(&g_server_state->clients_list_mutex, NULL) != 0 ||
+        pthread_mutex_init(&g_server_state->rooms_list_mutex, NULL) != 0) {
+        fprintf(stderr, "CRITICAL: Failed to initialize main server mutexes. Exiting.\n");
+        free(g_server_state); // Free allocated memory before exit
+        exit(EXIT_FAILURE);
+    }
+    
+    // Initialize subsystems (logging is initialized first in main)
+    initialize_room_system();       // Initializes room structures and their mutexes
+    initialize_file_transfer_system(); // Initializes file queue, sem, cond, and starts workers
+
+    log_server_event("INFO", "Server state and subsystems initialized successfully.");
+}
+
+int setup_server_listening_socket(int port) {
+    struct sockaddr_in server_address_config;
+
+    g_server_state->server_listen_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_server_state->server_listen_socket_fd < 0) {
+        log_server_event("CRITICAL", "Socket creation failed: %s", strerror(errno));
+        return 0; // Failure
+    }
+
+    // Allow address reuse (helpful for quick server restarts)
+    int opt_reuse = 1;
+    if (setsockopt(g_server_state->server_listen_socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt_reuse, sizeof(opt_reuse)) < 0) {
+        log_server_event("WARNING", "setsockopt(SO_REUSEADDR) failed: %s", strerror(errno));
+        // Not critical, but good to log
+    }
+
+    memset(&server_address_config, 0, sizeof(server_address_config));
+    server_address_config.sin_family = AF_INET;
+    server_address_config.sin_addr.s_addr = INADDR_ANY; // Listen on all available interfaces
+    server_address_config.sin_port = htons(port);
+
+    if (bind(g_server_state->server_listen_socket_fd, (struct sockaddr *)&server_address_config, sizeof(server_address_config)) < 0) {
+        log_server_event("CRITICAL", "Socket bind failed on port %d: %s", port, strerror(errno));
+        close(g_server_state->server_listen_socket_fd);
+        g_server_state->server_listen_socket_fd = -1;
+        return 0; // Failure
+    }
+
+    if (listen(g_server_state->server_listen_socket_fd, MAX_SERVER_CLIENTS) < 0) { // Backlog size
+        log_server_event("CRITICAL", "Socket listen failed: %s", strerror(errno));
+        close(g_server_state->server_listen_socket_fd);
+        g_server_state->server_listen_socket_fd = -1;
+        return 0; // Failure
+    }
+
+    log_event_server_start(port); // Specific log for this event
+    return 1; // Success
+}
+
+void accept_client_connections_loop() {
+    struct sockaddr_in client_address_info;
+    socklen_t client_addr_len = sizeof(client_address_info);
+    pthread_t client_thread_id_temp; // To store ID of newly created thread
+
+    log_server_event("INFO", "Server starting to accept client connections.");
+    while (g_server_state->server_is_running) {
+        int new_client_socket_fd = accept(g_server_state->server_listen_socket_fd, 
+                                         (struct sockaddr *)&client_address_info, &client_addr_len);
+
+        if (!g_server_state->server_is_running) break; // Check flag immediately after accept returns
+
+        if (new_client_socket_fd < 0) {
+            if (errno == EINTR ) continue; // Interrupted by signal (e.g. SIGINT), re-check running flag
+            log_server_event("WARNING", "accept() failed or server socket closed: %s", strerror(errno));
+            // If server_is_running is false, this is expected during shutdown.
+            // Otherwise, it might be a temporary error or listen socket issue.
+            sleep(1); // Prevent rapid spin on persistent accept error
+            continue;
+        }
+
+        // Check if server can handle more clients
+        pthread_mutex_lock(&g_server_state->clients_list_mutex);
+        // Note: active_client_count is for LOGGED IN clients. We need to check available slots.
+        int available_slot = 0;
+        for(int i=0; i < MAX_SERVER_CLIENTS; ++i) if(g_server_state->connected_clients[i] == NULL) available_slot = 1;
+
+        if (!available_slot) {
+        // if (g_server_state->active_client_count >= MAX_SERVER_CLIENTS) { // This check is slightly off
+            pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+            log_server_event("INFO", "Max client limit (%d) reached. Rejecting new connection from %s.", 
+                             MAX_SERVER_CLIENTS, inet_ntoa(client_address_info.sin_addr));
+            send_error_to_client(new_client_socket_fd, "Server is currently full. Please try again later.");
+            close(new_client_socket_fd);
+            continue;
+        }
+        pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+
+
+        client_info_t *new_client_data = register_new_client_on_server(new_client_socket_fd, client_address_info);
+        if (new_client_data) {
+            if (pthread_create(&client_thread_id_temp, NULL, client_connection_thread_handler, new_client_data) != 0) {
+                log_server_event("ERROR", "Failed to create thread for new client %s: %s", 
+                                 inet_ntoa(client_address_info.sin_addr), strerror(errno));
+                unregister_client(new_client_data, 1); // Clean up the client struct and close socket
+            } else {
+                new_client_data->thread_id = client_thread_id_temp; // Store thread ID if needed for join (usually detach)
+                pthread_detach(client_thread_id_temp); // Detach as per Q&A suggestion for pthread_detach
+                // log_server_event("DEBUG", "Thread %lu created for client from %s.", 
+                //                  (unsigned long)client_thread_id_temp, inet_ntoa(client_address_info.sin_addr));
+            }
+        } else {
+            // register_new_client_on_server failed and already logged/closed socket.
+        }
+    }
+    log_server_event("INFO", "Server has stopped accepting new connections.");
+}
+
+void cleanup_server_resources() {
+    log_server_event("INFO", "Starting final server resource cleanup...");
+    int clients_at_shutdown = g_server_state->active_client_count; // Before clearing them
+
+    // File transfer system cleanup (joins worker threads)
+    cleanup_file_transfer_system();
+
+    // Notify and close remaining client connections
+    // Client threads should exit due to server_is_running=0.
+    // This is a final sweep.
+    pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    for (int i = 0; i < MAX_SERVER_CLIENTS; ++i) {
+        if (g_server_state->connected_clients[i] != NULL) {
+            client_info_t *client = g_server_state->connected_clients[i];
+            if (client->is_active) { // If thread didn't clean it up yet
+                notify_client_of_shutdown(client->socket_fd);
+                // Client thread is responsible for its own unregister_client call.
+                // But if server shuts down abruptly, we might need to force close here.
+                // For pthread_detach, client thread might still be running.
+                // Setting is_active=0 and closing socket here ensures it stops.
+                client->is_active = 0;
+                if(client->socket_fd >=0) {
+                    shutdown(client->socket_fd, SHUT_RDWR);
+                    close(client->socket_fd);
+                    client->socket_fd = -1;
+                }
+            }
+            // The client_info_t struct itself will be freed by its handler thread upon exit.
+            // If we free it here, the handler might double-free or use freed memory.
+            // For detached threads, it's tricky. A joinable model is safer for this kind of cleanup.
+            // Given pthread_detach recommendation, rely on client_handler to free its own client_info.
+            // So, we might not explicitly free g_server_state->connected_clients[i] here.
+            // Alternative: client_handler sets connected_clients[i] to NULL before freeing.
+            // For this submission, let's assume client_handler frees its own client_info.
+             g_server_state->connected_clients[i] = NULL; // Remove from list
+        }
+    }
+    g_server_state->active_client_count = 0;
+    pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+
+
+    // Clean up room mutexes (room_system was initialized, so locks exist)
+    pthread_mutex_lock(&g_server_state->rooms_list_mutex);
+    for (int i = 0; i < MAX_ROOMS; ++i) { // Iterate all possible room slots
+        // Check if room was actually used (e.g. name is set)
+        // if (strlen(g_server_state->chat_rooms[i].name) > 0) {
+            pthread_mutex_destroy(&g_server_state->chat_rooms[i].room_lock);
+        // }
+    }
+    pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
+
+
+    // Destroy main server mutexes
+    pthread_mutex_destroy(&g_server_state->clients_list_mutex);
+    pthread_mutex_destroy(&g_server_state->rooms_list_mutex);
+
+    log_event_sigint_shutdown(clients_at_shutdown); // Log with count before client list is fully cleared
+
+    // Free the global server state itself
+    if (g_server_state) {
+        free(g_server_state);
+        g_server_state = NULL;
+    }
+
+    log_server_event("INFO", "Server shutdown complete. All resources released.");
+    finalize_server_logging(); // Close log file as the very last step
+}
+
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+        fprintf(stderr, "Example: %s 5000\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    int server_port = atoi(argv[1]);
+    if (server_port <= 0 || server_port > 65535) {
+        fprintf(stderr, "Invalid port number: %s. Must be between 1 and 65535.\n", argv[1]);
+        return EXIT_FAILURE;
+    }
+
+    // Initialize logging system first
+    if (!initialize_server_logging(SERVER_LOG_FILENAME)) {
+        // Error already printed by init function
+        return EXIT_FAILURE; 
+    }
+
+    // Setup signal handler for SIGINT (Ctrl+C)
+    struct sigaction sigint_action_config;
+    memset(&sigint_action_config, 0, sizeof(sigint_action_config));
+    sigint_action_config.sa_handler = sigint_shutdown_handler;
+    // sigint_action_config.sa_flags = SA_RESTART; // Important for syscalls like accept
+    if (sigaction(SIGINT, &sigint_action_config, NULL) == -1) {
+        log_server_event("CRITICAL", "Failed to set SIGINT handler: %s", strerror(errno));
+        finalize_server_logging();
+        return EXIT_FAILURE;
+    }
+
+    // Initialize server state (allocates g_server_state, inits mutexes, subsystems)
+    initialize_server_state(); // This now also starts file worker threads
+
+    // Setup listening socket
+    if (!setup_server_listening_socket(server_port)) {
+        // Error already logged
+        cleanup_server_resources(); // Attempt cleanup of what was initialized
+        return EXIT_FAILURE;
+    }
+
+    // Main loop to accept client connections
+    accept_client_connections_loop();
+
+    // --- Shutdown sequence (triggered by SIGINT or loop exit condition) ---
+    log_server_event("INFO", "Server main loop ended. Proceeding with full shutdown sequence.");
+    cleanup_server_resources();
+
+    // printf("Server has shut down.\n"); // Final console message after logging is closed.
+    return EXIT_SUCCESS;
+}===== server/room_manager.c =====
+#include "common.h"
+
+void initialize_room_system() {
+    pthread_mutex_lock(&g_server_state->rooms_list_mutex);
+    for (int i = 0; i < MAX_ROOMS; ++i) {
+        memset(&g_server_state->chat_rooms[i], 0, sizeof(chat_room_t));
+        // Initialize mutex for each potential room structure.
+        // Alternatively, initialize only when room is actually created.
+        // For simplicity and fixed array, initializing all upfront is okay.
+        if (pthread_mutex_init(&g_server_state->chat_rooms[i].room_lock, NULL) != 0) {
+            log_server_event("CRITICAL", "Failed to initialize mutex for room slot %d", i);
+            // This is a critical failure, server might not be able to run safely.
+            // Consider exiting or a more robust error handling.
+        }
+    }
+    g_server_state->current_room_count = 0;
+    pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
+    log_server_event("INFO", "Room management system initialized.");
+}
+
+// Finds an existing room or creates a new one if possible.
+// Returns pointer to the room, or NULL if not found and cannot create.
+chat_room_t* find_or_create_chat_room(const char *room_name_to_find) {
+    if (!is_valid_room_name(room_name_to_find)) {
+        return NULL; // Invalid name
+    }
+
+    pthread_mutex_lock(&g_server_state->rooms_list_mutex); // Lock for accessing/modifying rooms_list
+
+    // Try to find existing room
+    for (int i = 0; i < g_server_state->current_room_count; ++i) {
+        if (strcmp(g_server_state->chat_rooms[i].name, room_name_to_find) == 0) {
+            pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
+            return &g_server_state->chat_rooms[i]; // Found
+        }
+    }
+
+    // If not found, try to create if space available
+    if (g_server_state->current_room_count < MAX_ROOMS) {
+        chat_room_t *new_room = &g_server_state->chat_rooms[g_server_state->current_room_count];
+        // The room_lock for this slot should already be initialized by initialize_room_system
+
+        strncpy(new_room->name, room_name_to_find, ROOM_NAME_BUF_SIZE - 1);
+        new_room->member_count = 0; 
+        // new_room->members array is already zeroed out or will be managed.
+        
+        g_server_state->current_room_count++;
+        pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
+        
+        log_event_room_created(new_room->name);
+        return new_room;
+    }
+
+    pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
+    log_server_event("WARNING", "Could not create room '%s': Maximum room limit reached.", room_name_to_find);
+    return NULL; // Max rooms reached
+}
+
+// Adds a client to a given room. Assumes room pointer is valid.
+// Returns 1 on success, 0 on failure (e.g., room full).
+int add_client_to_room(client_info_t *client, chat_room_t *room) {
+    if (!client || !room) return 0;
+
+    pthread_mutex_lock(&room->room_lock); // Lock specific room
+
+    if (room->member_count >= MAX_MEMBERS_PER_ROOM) {
+        pthread_mutex_unlock(&room->room_lock);
+        log_server_event("INFO", "Client %s failed to join room '%s': Room is full.", client->username, room->name);
+        return 0; // Room is full
+    }
+
+    // Check if client is already in this room (should not happen if logic is correct elsewhere)
+    for (int i = 0; i < room->member_count; ++i) {
+        if (room->members[i] == client) {
+            pthread_mutex_unlock(&room->room_lock);
+            return 1; // Already a member
+        }
+    }
+
+    // Add client to room
+    room->members[room->member_count] = client;
+    room->member_count++;
+    
+    pthread_mutex_unlock(&room->room_lock);
+    
+    // Update client's state
+    strncpy(client->current_room_name, room->name, ROOM_NAME_BUF_SIZE - 1);
+    return 1; // Success
+}
+
+// Removes a client from the room they are currently in.
+void remove_client_from_their_room(client_info_t *client) {
+    if (!client || strlen(client->current_room_name) == 0) {
+        return; // Client is not in any room or invalid client
+    }
+
+    // Find the room first (needs rooms_list_mutex to safely iterate g_server_state->chat_rooms)
+    chat_room_t *room_to_leave = NULL;
+    pthread_mutex_lock(&g_server_state->rooms_list_mutex);
+    for (int i = 0; i < g_server_state->current_room_count; ++i) {
+        if (strcmp(g_server_state->chat_rooms[i].name, client->current_room_name) == 0) {
+            room_to_leave = &g_server_state->chat_rooms[i];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
+
+    if (!room_to_leave) {
+        log_server_event("WARNING", "Client %s attempting to leave non-existent room '%s'.", client->username, client->current_room_name);
+        memset(client->current_room_name, 0, ROOM_NAME_BUF_SIZE); // Clear client's room state anyway
+        return;
+    }
+
+    pthread_mutex_lock(&room_to_leave->room_lock); // Lock the specific room
+    int found_idx = -1;
+    for (int i = 0; i < room_to_leave->member_count; ++i) {
+        if (room_to_leave->members[i] == client) {
+            found_idx = i;
+            break;
+        }
+    }
+
+    if (found_idx != -1) {
+        // Shift members to fill the gap
+        for (int i = found_idx; i < room_to_leave->member_count - 1; ++i) {
+            room_to_leave->members[i] = room_to_leave->members[i+1];
+        }
+        room_to_leave->members[room_to_leave->member_count - 1] = NULL; // Clear last ptr
+        room_to_leave->member_count--;
+    }
+    pthread_mutex_unlock(&room_to_leave->room_lock);
+
+    // Clear client's current room state
+    char old_room_name[ROOM_NAME_BUF_SIZE]; // For logging
+    strncpy(old_room_name, client->current_room_name, ROOM_NAME_BUF_SIZE-1);
+    memset(client->current_room_name, 0, ROOM_NAME_BUF_SIZE);
+    
+    if (found_idx != -1) { // Log only if client was actually removed
+         log_event_client_left_room(client->username, old_room_name);
+    }
+}
+
+// Handles a client's request to join a room.
+void handle_join_room_request(client_info_t *client, const char *room_name_requested) {
+    if (!is_valid_room_name(room_name_requested)) {
+        send_error_to_client(client->socket_fd, "Invalid room name format.");
+        return;
+    }
+    
+    char old_room_name_for_log[ROOM_NAME_BUF_SIZE];
+    int was_in_room = strlen(client->current_room_name) > 0;
+    if(was_in_room) strncpy(old_room_name_for_log, client->current_room_name, ROOM_NAME_BUF_SIZE-1);
+
+
+    // If client is already in a room, leave it first.
+    if (was_in_room) {
+        if (strcmp(client->current_room_name, room_name_requested) == 0) {
+            send_success_with_room_to_client(client->socket_fd, "You are already in this room.", room_name_requested);
+            return;
+        }
+        // Notify old room members about departure
+        chat_room_t* old_room = find_or_create_chat_room(client->current_room_name); // Should exist
+        if (old_room) {
+            char notification_msg_content[MESSAGE_BUF_SIZE];
+            snprintf(notification_msg_content, sizeof(notification_msg_content), "%s has left the room.", client->username);
+            message_t leave_notification;
+            memset(&leave_notification, 0, sizeof(leave_notification));
+            leave_notification.type = MSG_SERVER_NOTIFICATION;
+            strncpy(leave_notification.sender, "SERVER", USERNAME_BUF_SIZE-1);
+            strncpy(leave_notification.room, old_room->name, ROOM_NAME_BUF_SIZE-1);
+            strncpy(leave_notification.content, notification_msg_content, MESSAGE_BUF_SIZE-1);
+            broadcast_message_to_room_members(old_room, &leave_notification, client->username); // Exclude self
+        }
+        remove_client_from_their_room(client); // This also logs the leave
+    }
+
+    chat_room_t *target_room = find_or_create_chat_room(room_name_requested);
+    if (!target_room) {
+        send_error_to_client(client->socket_fd, "Failed to find or create the room (server limit may be reached).");
+        return;
+    }
+
+    if (add_client_to_room(client, target_room)) {
+        send_success_with_room_to_client(client->socket_fd, "Joined room successfully.", target_room->name);
+        
+        if(was_in_room) {
+            log_event_client_switched_room(client->username, old_room_name_for_log, target_room->name);
+        } else {
+            log_event_client_joined_room(client->username, target_room->name);
+        }
+
+        // Notify new room members about arrival
+        char notification_msg_content[MESSAGE_BUF_SIZE];
+        snprintf(notification_msg_content, sizeof(notification_msg_content), "%s has joined the room.", client->username);
+        message_t join_notification;
+        memset(&join_notification, 0, sizeof(join_notification));
+        join_notification.type = MSG_SERVER_NOTIFICATION;
+        strncpy(join_notification.sender, "SERVER", USERNAME_BUF_SIZE-1);
+        strncpy(join_notification.room, target_room->name, ROOM_NAME_BUF_SIZE-1);
+        strncpy(join_notification.content, notification_msg_content, MESSAGE_BUF_SIZE-1);
+        broadcast_message_to_room_members(target_room, &join_notification, client->username); // Exclude self
+
+    } else {
+        send_error_to_client(client->socket_fd, "Failed to join room (it might be full).");
+        // If client was in old_room and failed to join new one, they are now in no room.
+        // This state is consistent.
+    }
+}
+
+void handle_leave_room_request(client_info_t *client) {
+    if (strlen(client->current_room_name) == 0) {
+        send_error_to_client(client->socket_fd, "You are not in any room.");
+        return;
+    }
+    
+    char room_that_was_left[ROOM_NAME_BUF_SIZE];
+    strncpy(room_that_was_left, client->current_room_name, ROOM_NAME_BUF_SIZE-1);
+
+    // Notify room members about departure
+    chat_room_t* old_room = find_or_create_chat_room(client->current_room_name); // Should exist
+    if (old_room) {
+        char notification_msg_content[MESSAGE_BUF_SIZE];
+        snprintf(notification_msg_content, sizeof(notification_msg_content), "%s has left the room.", client->username);
+        message_t leave_notification;
+        memset(&leave_notification, 0, sizeof(leave_notification));
+        leave_notification.type = MSG_SERVER_NOTIFICATION;
+        strncpy(leave_notification.sender, "SERVER", USERNAME_BUF_SIZE-1);
+        strncpy(leave_notification.room, old_room->name, ROOM_NAME_BUF_SIZE-1);
+        strncpy(leave_notification.content, notification_msg_content, MESSAGE_BUF_SIZE-1);
+        broadcast_message_to_room_members(old_room, &leave_notification, client->username); // Exclude self
+    }
+    
+    remove_client_from_their_room(client); // This logs the leave internally
+    send_success_to_client(client->socket_fd, "You have left the room.");
+}
+
+// Handles a broadcast message from a client.
+void handle_broadcast_request(client_info_t *client_sender, const char *message_content) {
+    if (strlen(client_sender->current_room_name) == 0) {
+        send_error_to_client(client_sender->socket_fd, "You must be in a room to broadcast.");
+        return;
+    }
+    if (strlen(message_content) == 0 || strlen(message_content) >= MESSAGE_BUF_SIZE) {
+        send_error_to_client(client_sender->socket_fd, "Invalid message content for broadcast.");
+        return;
+    }
+
+    chat_room_t *current_room = find_or_create_chat_room(client_sender->current_room_name); // Should exist
+    if (!current_room) {
+        send_error_to_client(client_sender->socket_fd, "Error: Your current room seems to be invalid.");
+        log_server_event("ERROR", "Client %s in room %s which was not found during broadcast.", client_sender->username, client_sender->current_room_name);
+        return;
+    }
+
+    message_t broadcast_msg_to_send;
+    memset(&broadcast_msg_to_send, 0, sizeof(broadcast_msg_to_send));
+    broadcast_msg_to_send.type = MSG_BROADCAST;
+    strncpy(broadcast_msg_to_send.sender, client_sender->username, USERNAME_BUF_SIZE - 1);
+    strncpy(broadcast_msg_to_send.room, current_room->name, ROOM_NAME_BUF_SIZE - 1);
+    strncpy(broadcast_msg_to_send.content, message_content, MESSAGE_BUF_SIZE - 1);
+
+    // Send to all members of the room, including the sender (as per typical chat behavior)
+    broadcast_message_to_room_members(current_room, &broadcast_msg_to_send, NULL); // NULL exclude means send to all
+
+    log_event_broadcast(client_sender->username, current_room->name, message_content);
+    
+    // Send confirmation to the sender client (as per PDF page 4 "Message sent to room 'teamchat'")
+    char confirmation_text[100];
+    snprintf(confirmation_text, sizeof(confirmation_text), "Message sent to room '%s'", current_room->name);
+    send_success_to_client(client_sender->socket_fd, confirmation_text);
+}
+
+
+// Handles a whisper message from a client.
+void handle_whisper_request(client_info_t *client_sender, const char *receiver_username, const char *message_content) {
+    if (!is_valid_username(receiver_username)) {
+        send_error_to_client(client_sender->socket_fd, "Invalid recipient username for whisper.");
+        return;
+    }
+    if (strlen(message_content) == 0 || strlen(message_content) >= MESSAGE_BUF_SIZE) {
+        send_error_to_client(client_sender->socket_fd, "Invalid message content for whisper.");
+        return;
+    }
+    if (strcmp(client_sender->username, receiver_username) == 0) {
+        send_error_to_client(client_sender->socket_fd, "You cannot whisper to yourself.");
+        return;
+    }
+
+    pthread_mutex_lock(&g_server_state->clients_list_mutex); // Lock before finding client
+    client_info_t *receiver_client = find_client_by_username(receiver_username); // find_client needs review for locking
+    pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+
+    if (!receiver_client || !receiver_client->is_active) {
+        send_error_to_client(client_sender->socket_fd, "Recipient user not found or is offline.");
+        return;
+    }
+
+    message_t whisper_msg_to_send;
+    memset(&whisper_msg_to_send, 0, sizeof(whisper_msg_to_send));
+    whisper_msg_to_send.type = MSG_WHISPER;
+    strncpy(whisper_msg_to_send.sender, client_sender->username, USERNAME_BUF_SIZE - 1);
+    strncpy(whisper_msg_to_send.receiver, receiver_username, USERNAME_BUF_SIZE - 1); // For receiver's context if needed
+    strncpy(whisper_msg_to_send.content, message_content, MESSAGE_BUF_SIZE - 1);
+
+    if (send_message(receiver_client->socket_fd, &whisper_msg_to_send)) {
+        // Send confirmation to the sender client (as per PDF page 4 "Whisper sent to john42")
+        char confirmation_text[100];
+        snprintf(confirmation_text, sizeof(confirmation_text), "Whisper sent to %s", receiver_username);
+        send_success_to_client(client_sender->socket_fd, confirmation_text);
+        log_event_whisper(client_sender->username, receiver_username);
+    } else {
+        send_error_to_client(client_sender->socket_fd, "Failed to deliver whisper (recipient connection issue?).");
+        log_server_event("ERROR", "Failed to send whisper from %s to %s socket.", client_sender->username, receiver_username);
+    }
+}
+
+
+// Helper to send a message to all members of a room.
+// If exclude_username is not NULL, that user will be skipped.
+void broadcast_message_to_room_members(chat_room_t *room, const message_t *message_to_send, const char *exclude_username) {
+    if (!room || !message_to_send) return;
+
+    pthread_mutex_lock(&room->room_lock); // Lock the room for safe iteration
+    for (int i = 0; i < room->member_count; ++i) {
+        client_info_t *member = room->members[i];
+        if (member && member->is_active) {
+            if (exclude_username && strcmp(member->username, exclude_username) == 0) {
+                continue; // Skip excluded user
+            }
+            send_message(member->socket_fd, message_to_send);
+        }
+    }
+    pthread_mutex_unlock(&room->room_lock);
+}===== server/utils_server.c =====
+#include "common.h"
+
+// Finds a client by username. Used for whispers, file transfers.
+// NOTE: The caller must handle locking/unlocking g_server_state->clients_list_mutex
+// if this function is called in a context where the list might change.
+// However, for read-only operations like find, if the pointer is copied quickly,
+// it might be acceptable for some use cases. For safety, lock before calling.
+client_info_t* find_client_by_username(const char *username_to_find) {
+    if (!username_to_find) return NULL;
+
+    // No lock here, assuming caller handles or it's safe enough for a quick read.
+    // For higher concurrency safety, a lock would be needed around the loop.
+    // pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    for (int i = 0; i < MAX_SERVER_CLIENTS; i++) {
+        if (g_server_state->connected_clients[i] != NULL &&
+            g_server_state->connected_clients[i]->is_active &&
+            strcmp(g_server_state->connected_clients[i]->username, username_to_find) == 0) {
+            // pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+            return g_server_state->connected_clients[i];
+        }
+    }
+    // pthread_mutex_unlock(&g_server_state->clients_list_mutex);
+    return NULL; // Not found
+}
+
+void send_error_to_client(int client_socket_fd, const char *error_message) {
+    message_t err_msg;
+    memset(&err_msg, 0, sizeof(err_msg));
+    err_msg.type = MSG_ERROR; // Generic error
+    strncpy(err_msg.sender, "SERVER", USERNAME_BUF_SIZE -1);
+    strncpy(err_msg.content, error_message, MESSAGE_BUF_SIZE - 1);
+    
+    send_message(client_socket_fd, &err_msg); // Using shared send_message
+}
+
+void send_success_to_client(int client_socket_fd, const char *success_message) {
+    message_t suc_msg;
+    memset(&suc_msg, 0, sizeof(suc_msg));
+    suc_msg.type = MSG_SUCCESS; // Generic success
+    strncpy(suc_msg.sender, "SERVER", USERNAME_BUF_SIZE -1);
+    strncpy(suc_msg.content, success_message, MESSAGE_BUF_SIZE - 1);
+
+    send_message(client_socket_fd, &suc_msg);
+}
+
+void send_success_with_room_to_client(int client_socket_fd, const char* message, const char* room_name) {
+    message_t suc_msg;
+    memset(&suc_msg, 0, sizeof(suc_msg));
+    suc_msg.type = MSG_SUCCESS;
+    strncpy(suc_msg.sender, "SERVER", USERNAME_BUF_SIZE -1);
+    strncpy(suc_msg.content, message, MESSAGE_BUF_SIZE - 1);
+    if (room_name) { // Include room name if provided (e.g. for join success)
+        strncpy(suc_msg.room, room_name, ROOM_NAME_BUF_SIZE - 1);
+    }
+    send_message(client_socket_fd, &suc_msg);
+}
+
+// Helper for server to send notifications to clients (e.g. user X joined room Y)
+void send_server_notification_to_client(int client_socket_fd, const char* notification_message, const char* room_context) {
+    message_t notif_msg; 
+    memset(&notif_msg, 0, sizeof(notif_msg));
+    notif_msg.type = MSG_SERVER_NOTIFICATION;
+    strncpy(notif_msg.sender, "SERVER", USERNAME_BUF_SIZE -1);
+    strncpy(notif_msg.content, notification_message, MESSAGE_BUF_SIZE - 1);
+    if (room_context) {
+        strncpy(notif_msg.room, room_context, ROOM_NAME_BUF_SIZE - 1);
+    }
+    send_message(client_socket_fd, &notif_msg);
+}===== shared/protocol.h =====
+#ifndef PROTOCOL_H
+#define PROTOCOL_H
+
+#include <stddef.h> // For size_t
+#include <time.h>   // For time_t
+
+// Maximum limits
+#define MAX_USERNAME_LEN 16
+#define MAX_ROOM_NAME_LEN 32
+#define MAX_MESSAGE_LEN 1024
+#define MAX_FILENAME_LEN 256
+#define MAX_FILE_SIZE (3 * 1024 * 1024) // 3MB
+
+// Buffer sizes (including null terminator)
+#define USERNAME_BUF_SIZE (MAX_USERNAME_LEN + 1)
+#define ROOM_NAME_BUF_SIZE (MAX_ROOM_NAME_LEN + 1)
+#define FILENAME_BUF_SIZE (MAX_FILENAME_LEN + 1) // Max filename length is 255 + null
+#define MESSAGE_BUF_SIZE (MAX_MESSAGE_LEN)       // Max message content length is 1023 + null
+
+typedef enum
+{
+    MSG_LOGIN,
+    MSG_LOGIN_SUCCESS, // Specific success for login differentiation if needed by client
+    MSG_LOGIN_FAILURE, // Specific failure for login
+    MSG_JOIN_ROOM,
+    MSG_LEAVE_ROOM,
+    MSG_BROADCAST,
+    MSG_WHISPER,
+    MSG_FILE_TRANSFER_REQUEST, // Client sends this to initiate
+    MSG_FILE_TRANSFER_DATA,    // Server sends this header to recipient, then raw data
+    MSG_FILE_TRANSFER_ACCEPT,  // Server sends to sender: "added to queue" / "wait"
+    MSG_FILE_TRANSFER_REJECT,  // Server sends to sender: "oversized", "queue full", "user offline"
+    MSG_DISCONNECT,
+    MSG_ERROR,              // General server error/info to client
+    MSG_SUCCESS,            // General server success/info to client
+    MSG_SERVER_NOTIFICATION // For server-initiated messages like "user X joined"
+} message_type_t;
+
+// Message structure
+typedef struct
+{
+    message_type_t type;
+    char sender[USERNAME_BUF_SIZE];
+    char receiver[USERNAME_BUF_SIZE];
+    char room[ROOM_NAME_BUF_SIZE];
+    char content[MESSAGE_BUF_SIZE];
+    char filename[FILENAME_BUF_SIZE];
+    size_t file_size;
+    // No actual file data in this struct; it's sent separately after a header.
+} message_t;
+
+#endif // PROTOCOL_H===== shared/utils.c =====
+#include "utils.h"
+#include <string.h>
+#include <ctype.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h> // For lseek, access
+#include <fcntl.h>  // For open
+#include <stdio.h>  // For perror (though errors often handled by caller)
+#include <errno.h>  // For errno
+
+int send_message(int socket_fd, const message_t *msg)
+{
+    if (socket_fd < 0)
+        return 0;
+    ssize_t bytes_sent = send(socket_fd, msg, sizeof(message_t), 0);
+    if (bytes_sent < 0)
+    {
+        // Non-critical error for send, let caller handle if it's a disconnect
+        // perror("send_message failed");
+        return 0;
+    }
+    return (bytes_sent == sizeof(message_t)) ? 1 : 0;
+}
+
+int receive_message(int socket_fd, message_t *msg)
+{
+    if (socket_fd < 0)
+        return 0;
+    memset(msg, 0, sizeof(message_t)); // Clear message struct before receiving
+    ssize_t bytes_received = recv(socket_fd, msg, sizeof(message_t), 0);
+
+    if (bytes_received == sizeof(message_t))
+    {
+        // Ensure all string fields are null-terminated for safety,
+        // even if server/client sending is trusted.
+        msg->sender[MAX_USERNAME_LEN] = '\0';
+        msg->receiver[MAX_USERNAME_LEN] = '\0';
+        msg->room[MAX_ROOM_NAME_LEN] = '\0';
+        msg->content[MESSAGE_BUF_SIZE - 1] = '\0';
+        msg->filename[FILENAME_BUF_SIZE - 1] = '\0';
+        return 1;
+    }
+    if (bytes_received < 0)
+    {
+        // Non-critical error for recv, let caller handle if it's a disconnect
+        // perror("receive_message failed");
+    }
+    // If bytes_received is 0, it's a graceful shutdown by peer.
+    // If it's > 0 but not sizeof(message_t), it's a partial read (problematic for this simple protocol)
+    return 0; // Indicate failure or closed connection
+}
+
+int is_valid_username(const char *username)
+{
+    if (!username || strlen(username) == 0 || strlen(username) > MAX_USERNAME_LEN)
+    {
+        return 0;
+    }
+    for (size_t i = 0; i < strlen(username); i++)
+    {
+        if (!isalnum((unsigned char)username[i])) // Cast to unsigned char for isalnum
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int is_valid_room_name(const char *room_name)
+{
+    if (!room_name || strlen(room_name) == 0 || strlen(room_name) > MAX_ROOM_NAME_LEN)
+    {
+        return 0;
+    }
+    for (size_t i = 0; i < strlen(room_name); i++)
+    {
+        // PDF: "No spaces or special characters allowed." isalnum covers this.
+        if (!isalnum((unsigned char)room_name[i]))
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int is_valid_file_type(const char *filename)
+{
+    if (!filename)
+        return 0;
+
+    const char *ext = strrchr(filename, '.');
+    if (!ext || ext == filename) // No extension or starts with '.' (hidden file)
+        return 0;
+
+    // PDF: .txt, .pdf, .jpg, .png
+    if (strcmp(ext, ".txt") == 0)
+        return 1;
+    if (strcmp(ext, ".pdf") == 0)
+        return 1;
+    if (strcmp(ext, ".jpg") == 0)
+        return 1;
+    if (strcmp(ext, ".png") == 0)
+        return 1;
+
+    return 0;
+}
+
+long get_file_size_from_fd(int fd)
+{
+    if (fd < 0)
+        return -1;
+    struct stat st;
+    if (fstat(fd, &st) == -1)
+    {
+        perror("fstat failed to get file size");
+        return -1;
+    }
+    return (long)st.st_size;
+}
+
+long get_file_size_from_path(const char *filepath)
+{
+    if (!filepath)
+        return -1;
+    struct stat st;
+    if (stat(filepath, &st) == -1)
+    {
+        // This can happen if file doesn't exist, not always an error to print perror
+        // perror("stat failed to get file size");
+        return -1;
+    }
+    return (long)st.st_size;
+}===== shared/utils.h =====
+#ifndef SHARED_UTILS_H
+#define SHARED_UTILS_H
+
+#include "protocol.h" // For message_t
+
+// Socket communication functions
+int send_message(int socket_fd, const message_t *msg);
+int receive_message(int socket_fd, message_t *msg);
+
+// Validation functions
+int is_valid_username(const char *username);
+int is_valid_room_name(const char *room_name);
+int is_valid_file_type(const char *filename); // Used by client and server for pre-check
+
+// File utility (client-side primarily for sending)
+long get_file_size_from_path(const char *filepath); // Gets size from path
+long get_file_size_from_fd(int fd);                 // Gets size from open file descriptor
+
+#endif // SHARED_UTILS_H

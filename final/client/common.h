@@ -11,85 +11,47 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
-#include <ctype.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+#include <fcntl.h> // For O_RDONLY etc.
+#include <sys/select.h> // For fd_set, select
 
-// Maximum limits (must match server)
-#define MAX_CLIENTS 32
-#define MAX_USERNAME_LEN 16
-#define MAX_ROOM_NAME_LEN 32
-#define MAX_MESSAGE_LEN 1024
-#define MAX_FILENAME_LEN 256
-#define MAX_FILE_SIZE (3 * 1024 * 1024) // 3MB
-#define BUFFER_SIZE 4096
-
-// Message types (must match server)
-typedef enum {
-    MSG_LOGIN,
-    MSG_JOIN_ROOM,
-    MSG_LEAVE_ROOM,
-    MSG_BROADCAST,
-    MSG_WHISPER,
-    MSG_FILE_TRANSFER,
-    MSG_DISCONNECT,
-    MSG_ERROR,
-    MSG_SUCCESS,
-    MSG_FILE_DATA
-} message_type_t;
-
-// Message structure (must match server)
-typedef struct {
-    message_type_t type;
-    char sender[MAX_USERNAME_LEN + 1];
-    char receiver[MAX_USERNAME_LEN + 1];
-    char room[MAX_ROOM_NAME_LEN + 1];
-    char content[MAX_MESSAGE_LEN];
-    char filename[MAX_FILENAME_LEN];
-    size_t file_size;
-} message_t;
+#include "../shared/protocol.h" // Message structures and constants
+#include "../shared/utils.h"    // Shared utility functions like send_message
 
 // Client state
-typedef struct {
+typedef struct
+{
     int socket_fd;
-    char username[MAX_USERNAME_LEN + 1];
-    char current_room[MAX_ROOM_NAME_LEN + 1];
-    int connected;
-    int shutdown_pipe[2];    // Pipe for clean shutdown signaling
-    pthread_t receiver_thread;
+    char username[USERNAME_BUF_SIZE];
+    char current_room[ROOM_NAME_BUF_SIZE];
+    volatile int connected;      // Ensure visibility across threads
+    pthread_t receiver_thread_id;
+    int shutdown_pipe_fds[2]; // Pipe for signaling shutdown between threads
 } client_state_t;
 
-// Function declarations
-// Network functions
-int connect_to_server(client_state_t* client, const char* server_ip, int port);
-int send_message(int socket_fd, message_t* msg);
-int receive_message(int socket_fd, message_t* msg);
+// Function declarations for client-specific logic
 
-// Client functions
-int handle_client_login(client_state_t* client);
-void* message_receiver(void* arg);
-void handle_user_input(client_state_t* client);
-void process_user_command(client_state_t* client, const char* input);
-void cleanup_client(client_state_t* client);
+// client/main.c
+void signal_handler_client(int sig); // Renamed to avoid conflict if ever linked together
+void cleanup_client_resources(client_state_t *client_state);
 
-// Command functions
-void send_join_command(client_state_t* client, const char* room_name);
-void send_leave_command(client_state_t* client);
-void send_broadcast_command(client_state_t* client, const char* message);
-void send_whisper_command(client_state_t* client, const char* receiver, const char* message);
-void send_file_command(client_state_t* client, const char* receiver, const char* filename);
-void send_disconnect_command(client_state_t* client);
+// client/network.c
+int connect_client_to_server(client_state_t *client_state, const char *server_ip, int port);
+int perform_client_login(client_state_t *client_state);
 
-// Utility functions
-void print_help(void);
-void print_colored_message(const char* type, const char* sender, const char* content);
-int is_valid_username(const char* username);
-int is_valid_room_name(const char* room_name);
-int is_valid_file_type(const char* filename);
-long get_file_size(int fd);
+// client/commands.c
+void process_user_command(client_state_t *client_state, const char *input_buffer);
+void send_join_room_command(client_state_t *client_state, const char *room_name);
+void send_leave_room_command(client_state_t *client_state);
+void send_broadcast_command(client_state_t *client_state, const char *message_content);
+void send_whisper_command(client_state_t *client_state, const char *target_username, const char *message_content);
+void send_file_request_command(client_state_t *client_state, const char *filepath, const char *target_username);
+void send_disconnect_signal(client_state_t *client_state);
+void display_help_message(void);
 
-#endif // CLIENT_COMMON_H 
+
+// client/main.c (message_receiver thread function)
+void *client_message_receiver_thread(void *arg);
+void handle_user_input_loop(client_state_t *client_state);
+
+
+#endif // CLIENT_COMMON_H
