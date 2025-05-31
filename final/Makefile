@@ -8,12 +8,12 @@ SHARED_OBJS = shared/utils.o
 # Client specific
 CLIENT_SRCS = client/main.c client/commands.c client/network.c
 CLIENT_OBJS = $(CLIENT_SRCS:.c=.o) $(SHARED_OBJS)
-CLIENT_EXEC = client/chatclient
+CLIENT_EXEC = chatclient
 
 # Server specific
 SERVER_SRCS = server/main.c server/client_handler.c server/room_manager.c server/file_transfer.c server/logging.c server/utils_server.c
 SERVER_OBJS = $(SERVER_SRCS:.c=.o) $(SHARED_OBJS)
-SERVER_EXEC = server/chatserver
+SERVER_EXEC = chatserver
 
 .PHONY: all clean client server
 

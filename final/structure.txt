@@ -1,17 +1,13 @@
 .
-├── COMPLIANCE_FIXES_SUMMARY.md
-├── IMPLEMENTATION_SUMMARY.md
 ├── Makefile
-├── PROJECT_OVERVIEW.md
-├── README.md
-├── TEST_SCENARIOS_REPORT.md
 ├── client
 │   ├── commands.c
 │   ├── common.h
 │   ├── main.c
-│   ├── network.c
-│   └── utils.c
+│   └── network.c
+├── merged_output.txt
 ├── received_filenn.txt
+├── received_test.txt
 ├── server
 │   ├── client_handler.c
 │   ├── common.h
@@ -19,8 +15,12 @@
 │   ├── logging.c
 │   ├── main.c
 │   ├── room_manager.c
-│   └── utils.c
+│   └── utils_server.c
+├── shared
+│   ├── protocol.h
+│   ├── utils.c
+│   └── utils.h
 ├── structure.txt
 └── test.txt
 
-3 directories, 21 files
+4 directories, 20 files
