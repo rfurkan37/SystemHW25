@@ -1,133 +1,137 @@
 #include "utils.h"
-#include <string.h>
-#include <ctype.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <unistd.h> // For lseek, access
-#include <fcntl.h>  // For open
-#include <stdio.h>  // For perror (though errors often handled by caller)
-#include <errno.h>  // For errno
+#include <string.h>     // For strlen, strcmp, strrchr, memset
+#include <ctype.h>      // For isalnum
+#include <sys/socket.h> // For send, recv
+#include <sys/stat.h>   // For stat
+#include <unistd.h>     // For read, write (if used directly, not here)
+#include <stdio.h>      // For perror (though generally avoided here for library-style functions)
+#include <errno.h>      // For errno
 
-int send_message(int socket_fd, const message_t *msg)
+// Sends a Message struct over the socket.
+// Returns 1 if the entire message was sent, 0 otherwise.
+int sendMessage(int socket_fd, const Message *msg)
 {
-    if (socket_fd < 0)
-        return 0;
-    ssize_t bytes_sent = send(socket_fd, msg, sizeof(message_t), 0);
+    if (socket_fd < 0 || !msg)
+    {
+        return 0; // Invalid arguments
+    }
+    ssize_t bytes_sent = send(socket_fd, msg, sizeof(Message), 0);
     if (bytes_sent < 0)
     {
-        // Non-critical error for send, let caller handle if it's a disconnect
-        // perror("send_message failed");
-        return 0;
+        // Caller can check errno if needed (e.g., EPIPE for broken pipe)
+        return 0; // Send error
     }
-    return (bytes_sent == sizeof(message_t)) ? 1 : 0;
+    return (bytes_sent == sizeof(Message)) ? 1 : 0; // Success only if all bytes sent
 }
 
-int receive_message(int socket_fd, message_t *msg)
+// Receives a Message struct from the socket.
+// Returns 1 if a complete message was received, 0 if connection closed or error.
+int receiveMessage(int socket_fd, Message *msg)
 {
-    if (socket_fd < 0)
-        return 0;
-    memset(msg, 0, sizeof(message_t)); // Clear message struct before receiving
-    ssize_t bytes_received = recv(socket_fd, msg, sizeof(message_t), 0);
-
-    if (bytes_received == sizeof(message_t))
+    if (socket_fd < 0 || !msg)
     {
-        // Ensure all string fields are null-terminated for safety,
-        // even if server/client sending is trusted.
-        msg->sender[MAX_USERNAME_LEN] = '\0';
-        msg->receiver[MAX_USERNAME_LEN] = '\0';
-        msg->room[MAX_ROOM_NAME_LEN] = '\0';
+        return 0; // Invalid arguments
+    }
+    memset(msg, 0, sizeof(Message)); // Clear message struct before receiving
+    ssize_t bytes_received = recv(socket_fd, msg, sizeof(Message), 0);
+
+    if (bytes_received == sizeof(Message))
+    {
+        // Ensure null termination for all string fields for safety,
+        // even if server/client is expected to send them null-terminated.
+        msg->sender[USERNAME_BUF_SIZE - 1] = '\0';
+        msg->receiver[USERNAME_BUF_SIZE - 1] = '\0';
+        msg->room[ROOM_NAME_BUF_SIZE - 1] = '\0';
         msg->content[MESSAGE_BUF_SIZE - 1] = '\0';
         msg->filename[FILENAME_BUF_SIZE - 1] = '\0';
-        return 1;
+        return 1; // Successfully received a full message
     }
-    if (bytes_received < 0)
+    else if (bytes_received == 0)
     {
-        // Non-critical error for recv, let caller handle if it's a disconnect
-        // perror("receive_message failed");
+        return 0; // Connection closed by peer
     }
-    // If bytes_received is 0, it's a graceful shutdown by peer.
-    // If it's > 0 but not sizeof(message_t), it's a partial read (problematic for this simple protocol)
-    return 0; // Indicate failure or closed connection
-}
-
-int is_valid_username(const char *username)
-{
-    if (!username || strlen(username) == 0 || strlen(username) > MAX_USERNAME_LEN)
+    else
     {
+        // Error (bytes_received < 0) or partial message (0 < bytes_received < sizeof(Message))
+        // For this project, partial messages are treated as errors.
         return 0;
     }
-    for (size_t i = 0; i < strlen(username); i++)
+}
+
+// Validates username: 1 to MAX_USERNAME_LEN characters, alphanumeric.
+int isValidUsername(const char *username)
+{
+    if (!username)
+        return 0;
+    size_t len = strlen(username);
+    if (len == 0 || len > MAX_USERNAME_LEN)
     {
-        if (!isalnum((unsigned char)username[i])) // Cast to unsigned char for isalnum
+        return 0; // Invalid length
+    }
+    for (size_t i = 0; i < len; i++)
+    {
+        if (!isalnum((unsigned char)username[i]))
         {
-            return 0;
+            return 0; // Contains non-alphanumeric characters
         }
     }
-    return 1;
+    return 1; // Username is valid
 }
 
-int is_valid_room_name(const char *room_name)
+// Validates room name: 1 to MAX_ROOM_NAME_LEN characters, alphanumeric.
+int isValidRoomName(const char *room_name)
 {
-    if (!room_name || strlen(room_name) == 0 || strlen(room_name) > MAX_ROOM_NAME_LEN)
-    {
+    if (!room_name)
         return 0;
-    }
-    for (size_t i = 0; i < strlen(room_name); i++)
+    size_t len = strlen(room_name);
+    if (len == 0 || len > MAX_ROOM_NAME_LEN)
     {
-        // PDF: "No spaces or special characters allowed." isalnum covers this.
+        return 0; // Invalid length
+    }
+    for (size_t i = 0; i < len; i++)
+    {
+        // As per PDF: "Room names must be alphanumeric... No spaces or special characters allowed."
         if (!isalnum((unsigned char)room_name[i]))
         {
-            return 0;
+            return 0; // Contains non-alphanumeric characters
         }
     }
-    return 1;
+    return 1; // Room name is valid
 }
 
-int is_valid_file_type(const char *filename)
+// Validates file type based on extension.
+// Supported: .txt, .pdf, .jpg, .png
+int isValidFileType(const char *filename)
 {
     if (!filename)
         return 0;
+    const char *dot = strrchr(filename, '.');
+    if (!dot || dot == filename || *(dot + 1) == '\0') // No dot, dot is first char, or dot is last char (e.g. "file.")
+        return 0;                                      // Invalid or no extension
 
-    const char *ext = strrchr(filename, '.');
-    if (!ext || ext == filename) // No extension or starts with '.' (hidden file)
-        return 0;
-
-    // PDF: .txt, .pdf, .jpg, .png
-    if (strcmp(ext, ".txt") == 0)
-        return 1;
-    if (strcmp(ext, ".pdf") == 0)
-        return 1;
-    if (strcmp(ext, ".jpg") == 0)
-        return 1;
-    if (strcmp(ext, ".png") == 0)
-        return 1;
-
-    return 0;
-}
-
-long get_file_size_from_fd(int fd)
-{
-    if (fd < 0)
-        return -1;
-    struct stat st;
-    if (fstat(fd, &st) == -1)
+    const char *valid_extensions[] = {".txt", ".pdf", ".jpg", ".png"};
+    for (size_t i = 0; i < sizeof(valid_extensions) / sizeof(valid_extensions[0]); ++i)
     {
-        perror("fstat failed to get file size");
-        return -1;
+        // Project description implies case-sensitive comparison is sufficient.
+        if (strcmp(dot, valid_extensions[i]) == 0)
+        {
+            return 1; // Found a valid extension
+        }
     }
-    return (long)st.st_size;
+    return 0; // Extension not in the valid list
 }
 
-long get_file_size_from_path(const char *filepath)
+// Gets file size from a given path using stat.
+// Returns file size as long, or -1 on error.
+long getFileSizeFromPath(const char *filepath)
 {
     if (!filepath)
         return -1;
     struct stat st;
     if (stat(filepath, &st) == -1)
     {
-        // This can happen if file doesn't exist, not always an error to print perror
-        // perror("stat failed to get file size");
-        return -1;
+        // Caller can check errno (e.g., ENOENT for file not found)
+        return -1; // stat failed
     }
-    return (long)st.st_size;
+    return (long)st.st_size; // Return file size
 }

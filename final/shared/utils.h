@@ -1,19 +1,33 @@
 #ifndef SHARED_UTILS_H
 #define SHARED_UTILS_H
 
-#include "protocol.h" // For message_t
+#include "protocol.h" // For Message struct definition
 
-// Socket communication functions
-int send_message(int socket_fd, const message_t *msg);
-int receive_message(int socket_fd, message_t *msg);
+// Socket communication wrapper functions
+// Sends a Message struct over the given socket.
+// Returns 1 on success (all bytes of Message sent), 0 on failure.
+int sendMessage(int socket_fd, const Message *msg);
 
-// Validation functions
-int is_valid_username(const char *username);
-int is_valid_room_name(const char *room_name);
-int is_valid_file_type(const char *filename); // Used by client and server for pre-check
+// Receives a Message struct from the given socket.
+// Returns 1 on success (all bytes of Message received), 0 on failure or if connection closed.
+int receiveMessage(int socket_fd, Message *msg);
 
-// File utility (client-side primarily for sending)
-long get_file_size_from_path(const char *filepath); // Gets size from path
-long get_file_size_from_fd(int fd);                 // Gets size from open file descriptor
+// Validation functions (shared between client and server)
+// Checks if a username is valid (alphanumeric, correct length).
+// Returns 1 if valid, 0 otherwise.
+int isValidUsername(const char *username);
+
+// Checks if a room name is valid (alphanumeric, correct length, no spaces).
+// Returns 1 if valid, 0 otherwise.
+int isValidRoomName(const char *room_name);
+
+// Checks if a filename has a supported extension.
+// Returns 1 if type is valid, 0 otherwise.
+int isValidFileType(const char *filename);
+
+// File utility functions
+// Gets the size of a file from its path.
+// Returns file size on success, -1 on error (e.g., file not found).
+long getFileSizeFromPath(const char *filepath);
 
 #endif // SHARED_UTILS_H

@@ -7,162 +7,176 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <semaphore.h>
-#include <signal.h>
+#include <signal.h> // For sig_atomic_t, signal handling
 #include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>      // For O_WRONLY etc. in logging
-#include <sys/stat.h>   // For mode_t in open
-#include <sys/types.h>  // For mode_t
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/select.h> // For fd_set (though mostly used in .c files)
 
-#include "../shared/protocol.h" // Shared message structures and constants
-#include "../shared/utils.h"    // Shared utility functions
+// Shared project includes
+#include "../shared/protocol.h"
+#include "../shared/utils.h"
 
-// Server-specific limits
-#define MAX_SERVER_CLIENTS 30    // PDF: "Supports at least 15 concurrent clients", test scenario "At least 30 clients"
-#define MAX_ROOMS MAX_SERVER_CLIENTS // Max rooms can be same as max clients, or a different value
-#define MAX_MEMBERS_PER_ROOM 15  // PDF constraint
-#define MAX_UPLOAD_QUEUE_SIZE 5 // PDF constraint
-#define SERVER_LOG_FILENAME "server.log"
+// Server-specific configuration and limits
+#define MAX_SERVER_CLIENTS 30            // Project: "Supports at least 15 concurrent clients"
+#define MAX_ROOMS MAX_SERVER_CLIENTS     // A reasonable upper bound, can be adjusted
+#define MAX_MEMBERS_PER_ROOM 15          // As per PDF: "Each room has a max capacity of 15 users"
+#define MAX_UPLOAD_QUEUE_SIZE 5          // PDF: "max 5 uploads at a time" (concurrent processing slots)
+#define SERVER_LOG_FILENAME "server.log" // Name of the server log file
+#define MAX_RECEIVED_FILES_TRACKED 50    // For Test Scenario 9: Same Filename Collision (per user)
 
+// Forward declarations for structs
+typedef struct ClientInfo ClientInfo;
+typedef struct ChatRoom ChatRoom;
+typedef struct FileTransferTask FileTransferTask;
 
-// Client structure (server-side representation)
-typedef struct {
-    int socket_fd;
-    char username[USERNAME_BUF_SIZE];
-    char current_room_name[ROOM_NAME_BUF_SIZE];
-    struct sockaddr_in client_address;
-    pthread_t thread_id;
-    volatile int is_active; // Client connection is active
-    time_t connection_time;
-} client_info_t;
+// Structure representing a connected client on the server side
+struct ClientInfo
+{
+    int socket_fd;                              // Client's socket descriptor
+    char username[USERNAME_BUF_SIZE];           // Client's authenticated username
+    char current_room_name[ROOM_NAME_BUF_SIZE]; // Name of the room client is currently in
+    struct sockaddr_in client_address;          // Client's network address (for logging IP)
+    pthread_t thread_id;                        // Thread ID handling this client's connection
+    volatile sig_atomic_t is_active;            // Flag: 1 if client is logged in and active, 0 otherwise
+    time_t connection_time;                     // Timestamp of initial connection
 
-// Room structure
-typedef struct {
-    char name[ROOM_NAME_BUF_SIZE];
-    client_info_t* members[MAX_MEMBERS_PER_ROOM]; // Pointers to client_info_t structs
-    int member_count;
-    pthread_mutex_t room_lock; // Mutex to protect this room's member list
-} chat_room_t;
+    // For Test Scenario 9: Filename collision detection
+    char received_filenames[MAX_RECEIVED_FILES_TRACKED][FILENAME_BUF_SIZE]; // Tracks names of files received by this user
+    int num_received_files;                                                 // Count of files in received_filenames
+    pthread_mutex_t received_files_lock;                                    // Mutex to protect access to received_filenames list
+};
 
-// File transfer request in the server's queue
-typedef struct file_transfer_task {
-    char filename[FILENAME_BUF_SIZE];
-    char sender_username[USERNAME_BUF_SIZE];
-    char receiver_username[USERNAME_BUF_SIZE];
-    size_t file_size;
-    char *file_data_buffer;    // Server holds the data in memory while queued
-    time_t enqueue_timestamp;
-    struct file_transfer_task *next_task;
-} file_transfer_task_t;
+// Structure representing a chat room
+struct ChatRoom
+{
+    char name[ROOM_NAME_BUF_SIZE];             // Name of the chat room
+    ClientInfo *members[MAX_MEMBERS_PER_ROOM]; // Array of pointers to members in this room
+    int member_count;                          // Current number of members in the room
+    pthread_mutex_t room_lock;                 // Mutex to protect members list and member_count
+};
 
-// File transfer queue
-typedef struct {
-    file_transfer_task_t *head;
-    file_transfer_task_t *tail;
-    int current_queue_length;
-    // int active_transfers; // Tracked by semaphore count
-    pthread_mutex_t queue_access_mutex;
-    pthread_cond_t queue_not_empty_cond; // Signal when a new item is added
-    sem_t available_upload_slots_sem; // Limits concurrent file processing
-} file_upload_queue_t;
+// Structure representing a file transfer task in the server's queue
+struct FileTransferTask
+{
+    char filename[FILENAME_BUF_SIZE];          // Name of the file being transferred
+    char sender_username[USERNAME_BUF_SIZE];   // Username of the file sender
+    char receiver_username[USERNAME_BUF_SIZE]; // Username of the file recipient
+    size_t file_size;                          // Size of the file
+    time_t enqueue_timestamp;                  // Timestamp when task was added to queue (for wait duration logging)
+    struct FileTransferTask *next_task;        // Pointer for linked list implementation of the queue
+};
 
-// Overall Server State
-typedef struct {
-    client_info_t *connected_clients[MAX_SERVER_CLIENTS]; // Array of pointers to client_info_t
-    chat_room_t chat_rooms[MAX_ROOMS];         // Array of chat_room_t structs
-    
-    int active_client_count;
-    int current_room_count;
-    
-    file_upload_queue_t file_transfer_manager;
+// Structure for managing the file upload queue and worker threads
+typedef struct FileUploadQueue
+{
+    FileTransferTask *head;   // Head of the file transfer task queue
+    FileTransferTask *tail;   // Tail of the file transfer task queue
+    int current_queue_length; // Number of tasks currently in the queue (waiting for a worker)
 
-    pthread_mutex_t clients_list_mutex; // Protects connected_clients array and active_client_count
-    pthread_mutex_t rooms_list_mutex;   // Protects chat_rooms array and current_room_count
+    pthread_mutex_t queue_access_mutex;  // Mutex to protect queue (head, tail, length)
+    pthread_cond_t queue_not_empty_cond; // Condition variable to signal workers when queue has tasks
+    sem_t available_upload_slots_sem;    // Semaphore limiting concurrent file processing workers
+} FileUploadQueue;
 
-    int server_listen_socket_fd;
-    volatile int server_is_running; // Flag to control main server loop and threads
-    pthread_t file_worker_thread_ids[MAX_UPLOAD_QUEUE_SIZE]; // Can have multiple worker threads
-} server_main_state_t;
+// Structure for the overall server state
+typedef struct ServerMainState
+{
+    ClientInfo *connected_clients[MAX_SERVER_CLIENTS]; // Array of pointers to client structures
+    ChatRoom chat_rooms[MAX_ROOMS];                    // Array of chat room structures
 
-// Global server state instance (declaration)
-extern server_main_state_t *g_server_state;
+    int active_client_count; // Count of currently logged-in (active) clients
+    int current_room_count;  // Count of currently active (created) rooms
 
+    FileUploadQueue file_transfer_manager; // Manages the file upload queue and workers
+
+    pthread_mutex_t clients_list_mutex; // Mutex for connected_clients array and active_client_count
+    pthread_mutex_t rooms_list_mutex;   // Mutex for chat_rooms array and current_room_count
+
+    int server_listen_socket_fd;                             // Listening socket for incoming connections
+    volatile sig_atomic_t server_is_running;                 // Flag for graceful server shutdown (1=running, 0=shutting down)
+    pthread_t file_worker_thread_ids[MAX_UPLOAD_QUEUE_SIZE]; // IDs of file processing worker threads
+} ServerMainState;
+
+// Global pointer to the server state instance
+extern ServerMainState *g_server_state;
 
 // --- Function Declarations ---
 
-// server/main.c
-void initialize_server_state(void);
-int setup_server_listening_socket(int port);
-void accept_client_connections_loop(void);
-void cleanup_server_resources(void);
-void sigint_shutdown_handler(int signal_number);
+// Located in: server/main.c
+void initializeServerState(void);              // Initializes the global server state structure and subsystems
+int setupServerListeningSocket(int port);      // Sets up and binds the main listening socket
+void acceptClientConnectionsLoop(void);        // Main loop for accepting new client connections
+void cleanupServerResources(void);             // Cleans up all server resources on shutdown
+void sigintShutdownHandler(int signal_number); // Handles SIGINT for graceful server shutdown
 
-// server/client_handler.c
-void* client_connection_thread_handler(void *client_info_ptr_arg);
-client_info_t* register_new_client_on_server(int client_socket_fd, struct sockaddr_in client_address);
-int process_client_login(client_info_t *client_info, const message_t *login_message);
-void handle_client_message(client_info_t *client_info, const message_t *message);
-void unregister_client(client_info_t *client_info, int is_unexpected_disconnect);
-void notify_client_of_shutdown(int client_socket_fd);
+// Located in: server/client_handler.c
+void *clientConnectionThreadHandler(void *clientInfoPtrArg);                                    // Thread function for handling a single client connection
+ClientInfo *registerNewClientOnServer(int client_socket_fd, struct sockaddr_in client_address); // Adds a new client to server list (pre-login)
+int processClientLogin(ClientInfo *clientInfo, const Message *login_message);                   // Processes a login request from a client
+void handleClientMessage(ClientInfo *clientInfo, const Message *message);                       // Main dispatcher for client messages
+void unregisterClient(ClientInfo *clientInfo, int is_unexpected_disconnect);                    // Removes client from server, cleans up resources
+void notifyClientOfShutdown(int client_socket_fd);                                              // Sends a shutdown notification to a client
 
+// Located in: server/room_manager.c
+void initializeRoomSystem(void);                                                                                  // Initializes the chat room management system
+ChatRoom *findOrCreateChatRoom(const char *room_name_to_find);                                                    // Finds an existing room or creates a new one
+int addClientToRoom(ClientInfo *client, ChatRoom *room);                                                          // Adds a client to a specified room
+void removeClientFromTheirRoom(ClientInfo *client);                                                               // Removes a client from their current room
+void handleJoinRoomRequest(ClientInfo *client, const char *room_name_requested);                                  // Handles a client's /join request
+void handleLeaveRoomRequest(ClientInfo *client);                                                                  // Handles a client's /leave request
+void handleBroadcastRequest(ClientInfo *client_sender, const char *message_content);                              // Handles a /broadcast request
+void handleWhisperRequest(ClientInfo *client_sender, const char *receiver_username, const char *message_content); // Handles /whisper
+void broadcastMessageToRoomMembers(ChatRoom *room, const Message *message_to_send, const char *exclude_username); // Sends msg to room
+void notifyRoomOfClientAction(ClientInfo *acting_client, ChatRoom *room, const char *action_verb);                // Notifies room members of a client's action (e.g., joined, left, disconnected)
 
-// server/room_manager.c
-void initialize_room_system(void);
-chat_room_t* find_or_create_chat_room(const char *room_name_to_find);
-int add_client_to_room(client_info_t *client, chat_room_t *room);
-void remove_client_from_their_room(client_info_t *client); // Removes from client->current_room_name
-void handle_join_room_request(client_info_t *client, const char *room_name_requested);
-void handle_leave_room_request(client_info_t *client);
-void handle_broadcast_request(client_info_t *client_sender, const char *message_content);
-void handle_whisper_request(client_info_t *client_sender, const char *receiver_username, const char *message_content);
-void broadcast_message_to_room_members(chat_room_t *room, const message_t *message_to_send, const char *exclude_username);
+// Located in: server/file_transfer.c
+void initializeFileTransferSystem(void);     // Initializes the file transfer queue and worker threads
+void *fileProcessingWorkerThread(void *arg); // Thread function for a file processing worker
+int addFileToUploadQueue(const char *filename, const char *sender_user, const char *receiver_user,
+                         size_t file_size_val);                                            // Adds a file (metadata) to the upload queue (simulation)
+void handleFileTransferRequest(ClientInfo *sender_client, const Message *file_req_header); // Handles /sendfile request
+void executeFileTransferToRecipient(FileTransferTask *task);                               // Simulates the actual file transfer to recipient
+void cleanupFileTransferSystem(void);                                                      // Cleans up file transfer system resources on shutdown
 
+// Located in: server/logging.c
+int initializeServerLogging(const char *log_filename);                 // Initializes the server logging mechanism
+void finalizeServerLogging(void);                                      // Finalizes logging, flushes and closes log file
+void logServerEvent(const char *tag, const char *details_format, ...); // General purpose logging function
+// Specific event logging functions for consistent formatting (as per PDF examples)
+void logEventServerStart(int port);
+void logEventClientConnected(const char *username, const char *ip_address);
+void logEventClientDisconnected(const char *username, int is_unexpected);
+void logEventClientLoginFailed(const char *username_attempted, const char *ip_addr, const char *reason);
+void logEventRoomCreated(const char *room_name);
+void logEventClientJoinedRoom(const char *username, const char *room_name);
+void logEventClientLeftRoom(const char *username, const char *room_name);
+void logEventClientSwitchedRoom(const char *username, const char *old_room, const char *new_room);
+void logEventBroadcast(const char *sender_username, const char *room_name, const char *message_content);
+void logEventWhisper(const char *sender_username, const char *receiver_username, const char *message_preview);
+void logEventFileTransferInitiated(const char *sender_username, const char *receiver_username, const char *filename);
+void logEventFileQueued(const char *sender_username, const char *filename, int current_q_size);
+void logEventFileRejectedOversized(const char *sender_username, const char *filename, size_t attempted_size);
+void logEventFileTransferProcessingStart(const char *sender_username, const char *filename, long wait_time_seconds);
+void logEventFileTransferCompleted(const char *sender_username, const char *receiver_username, const char *filename);
+void logEventFileTransferFailed(const char *sender_username, const char *receiver_username, const char *filename, const char *reason);
+void logEventFileCollision(const char *original_name, const char *new_name, const char *recipient_user, const char *sender_user);
+void logEventSigintShutdown(int num_clients_at_shutdown);
 
-// server/file_transfer.c
-void initialize_file_transfer_system(void);
-void* file_processing_worker_thread(void *arg); // Worker thread function
-void handle_file_transfer_request(client_info_t *sender_client, const message_t *file_req_header);
-int add_file_to_upload_queue(const char *filename, const char *sender_user, const char *receiver_user,
-                             char *actual_file_data, size_t file_size_val);
-file_transfer_task_t* get_next_file_from_queue(void);
-void execute_file_transfer_to_recipient(file_transfer_task_t *task);
-void cleanup_file_transfer_system(void);
-
-
-// server/logging.c
-int initialize_server_logging(const char* log_filename);
-void finalize_server_logging(void);
-void log_server_event(const char* tag, const char* details_format, ...);
-// Specific logging helpers that call log_server_event
-void log_event_server_start(int port);
-void log_event_client_connected(const char* username, const char* ip_address);
-void log_event_client_disconnected(const char* username, int is_unexpected);
-void log_event_client_login_failed(const char* username_attempted, const char* ip_addr, const char* reason);
-void log_event_room_created(const char* room_name);
-void log_event_client_joined_room(const char* username, const char* room_name);
-void log_event_client_left_room(const char* username, const char* room_name);
-void log_event_client_switched_room(const char* username, const char* old_room, const char* new_room);
-void log_event_broadcast(const char* sender_username, const char* room_name, const char* message_preview);
-void log_event_whisper(const char* sender_username, const char* receiver_username); // Msg content not logged per PDF
-void log_event_file_transfer_initiated(const char* sender_username, const char* receiver_username, const char* filename);
-void log_event_file_queued(const char* sender_username, const char* filename, int current_q_size);
-void log_event_file_rejected_oversized(const char* sender_username, const char* filename, size_t attempted_size);
-void log_event_file_transfer_processing_start(const char* sender_username, const char* filename, long wait_time_seconds);
-void log_event_file_transfer_completed(const char* sender_username, const char* receiver_username, const char* filename);
-void log_event_file_transfer_failed(const char* sender_username, const char* receiver_username, const char* filename, const char* reason);
-void log_event_sigint_shutdown(int num_clients_at_shutdown);
-
-
-// server/utils_server.c (server-specific utilities)
-client_info_t* find_client_by_socket(int socket_fd); // If needed
-client_info_t* find_client_by_username(const char *username_to_find);
-void send_error_to_client(int client_socket_fd, const char *error_message);
-void send_success_to_client(int client_socket_fd, const char *success_message);
-// Sends success with room context, useful for join
-void send_success_with_room_to_client(int client_socket_fd, const char* message, const char* room_name);
-
+// Located in: server/utils_server.c
+// Finds an active client by username. Expects clients_list_mutex to be HELD by the caller.
+ClientInfo *findClientByUsername(const char *username_to_find);
+// Helper functions to send standardized messages to clients
+void sendErrorToClient(int client_socket_fd, const char *error_message);
+void sendSuccessToClient(int client_socket_fd, const char *success_message);
+void sendSuccessWithRoomToClient(int client_socket_fd, const char *message, const char *room_name);
+void sendServerNotificationToClient(int client_socket_fd, const char *notification_message, const char *room_context);
+// Generates a new filename in case of collision (e.g., file.txt -> file_1.txt)
+void generate_collided_filename(const char *original_filename, int collision_num, char *output_buffer, size_t buffer_size);
 
 #endif // SERVER_COMMON_H

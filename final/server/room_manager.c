@@ -1,333 +1,454 @@
 #include "common.h"
 
-void initialize_room_system() {
-    pthread_mutex_lock(&g_server_state->rooms_list_mutex);
-    for (int i = 0; i < MAX_ROOMS; ++i) {
-        memset(&g_server_state->chat_rooms[i], 0, sizeof(chat_room_t));
-        // Initialize mutex for each potential room structure.
-        // Alternatively, initialize only when room is actually created.
-        // For simplicity and fixed array, initializing all upfront is okay.
-        if (pthread_mutex_init(&g_server_state->chat_rooms[i].room_lock, NULL) != 0) {
-            log_server_event("CRITICAL", "Failed to initialize mutex for room slot %d", i);
-            // This is a critical failure, server might not be able to run safely.
-            // Consider exiting or a more robust error handling.
-        }
+// Initializes the room system.
+// Sets up mutexes for each potential room slot.
+void initializeRoomSystem()
+{
+    if (!g_server_state)
+    {
+        // This should not happen if server main initializes g_server_state first.
+        fprintf(stderr, "CRITICAL: g_server_state is NULL in initializeRoomSystem.\n");
+        exit(EXIT_FAILURE); // Cannot proceed without server state
     }
-    g_server_state->current_room_count = 0;
+
+    // Lock the main rooms_list_mutex to safely initialize the chat_rooms array
+    pthread_mutex_lock(&g_server_state->rooms_list_mutex);
+    for (int i = 0; i < MAX_ROOMS; ++i)
+    {
+        memset(&g_server_state->chat_rooms[i], 0, sizeof(ChatRoom)); // Zero out room structure
+        if (pthread_mutex_init(&g_server_state->chat_rooms[i].room_lock, NULL) != 0)
+        {
+            pthread_mutex_unlock(&g_server_state->rooms_list_mutex); // Unlock before logging/exiting
+            logServerEvent("CRITICAL", "Failed to initialize mutex for room slot %d: %s", i, strerror(errno));
+            // This is a critical failure, proper cleanup of already initialized mutexes might be needed
+            // if we were to attempt recovery. For now, exit.
+            exit(EXIT_FAILURE);
+        }
+        // name field is already zeroed by memset, member_count is 0.
+    }
+    g_server_state->current_room_count = 0; // No rooms active yet
     pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
-    log_server_event("INFO", "Room management system initialized.");
+    logServerEvent("INFO", "Room management system initialized successfully.");
 }
 
-// Finds an existing room or creates a new one if possible.
-// Returns pointer to the room, or NULL if not found and cannot create.
-chat_room_t* find_or_create_chat_room(const char *room_name_to_find) {
-    if (!is_valid_room_name(room_name_to_find)) {
-        return NULL; // Invalid name
+// Finds an existing chat room by name or creates a new one if it doesn't exist and there's space.
+// Returns a pointer to the ChatRoom structure, or NULL on failure (e.g., max rooms reached).
+ChatRoom *findOrCreateChatRoom(const char *room_name_to_find)
+{
+    if (!g_server_state || !isValidRoomName(room_name_to_find))
+    {
+        return NULL; // Invalid input or server state
     }
 
-    pthread_mutex_lock(&g_server_state->rooms_list_mutex); // Lock for accessing/modifying rooms_list
+    pthread_mutex_lock(&g_server_state->rooms_list_mutex); // Lock for accessing rooms list and current_room_count
 
-    // Try to find existing room
-    for (int i = 0; i < g_server_state->current_room_count; ++i) {
-        if (strcmp(g_server_state->chat_rooms[i].name, room_name_to_find) == 0) {
+    // Try to find an existing room
+    for (int i = 0; i < g_server_state->current_room_count; ++i)
+    {
+        // Safely compare names, assuming g_server_state->chat_rooms[i].name is null-terminated
+        if (strncmp(g_server_state->chat_rooms[i].name, room_name_to_find, ROOM_NAME_BUF_SIZE) == 0)
+        {
             pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
-            return &g_server_state->chat_rooms[i]; // Found
+            return &g_server_state->chat_rooms[i]; // Room found
         }
     }
 
-    // If not found, try to create if space available
-    if (g_server_state->current_room_count < MAX_ROOMS) {
-        chat_room_t *new_room = &g_server_state->chat_rooms[g_server_state->current_room_count];
-        // The room_lock for this slot should already be initialized by initialize_room_system
+    // If room not found, try to create a new one
+    if (g_server_state->current_room_count < MAX_ROOMS)
+    {
+        // Get the next available room slot
+        ChatRoom *new_room = &g_server_state->chat_rooms[g_server_state->current_room_count];
+        // The room_lock for this slot was initialized in initializeRoomSystem.
+
+        // Now, lock this specific room's mutex before modifying its contents
+        // (though not strictly necessary here as no other thread should access it yet, good practice)
+        // pthread_mutex_lock(&new_room->room_lock); // Not strictly needed for initialization of a new room slot
 
         strncpy(new_room->name, room_name_to_find, ROOM_NAME_BUF_SIZE - 1);
-        new_room->member_count = 0; 
-        // new_room->members array is already zeroed out or will be managed.
-        
-        g_server_state->current_room_count++;
-        pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
-        
-        log_event_room_created(new_room->name);
-        return new_room;
+        new_room->name[ROOM_NAME_BUF_SIZE - 1] = '\0'; // Ensure null termination
+        new_room->member_count = 0;                    // Initialize member count
+        // members array is already zeroed from initialization or previous use if rooms are reused (not current model)
+
+        // pthread_mutex_unlock(&new_room->room_lock); // If locked above
+
+        g_server_state->current_room_count++; // Increment active room count
+
+        pthread_mutex_unlock(&g_server_state->rooms_list_mutex); // Unlock rooms list mutex
+        logEventRoomCreated(new_room->name);                     // Log room creation
+        return new_room;                                         // Return pointer to the new room
     }
 
+    // Max rooms reached, cannot create new room
     pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
-    log_server_event("WARNING", "Could not create room '%s': Maximum room limit reached.", room_name_to_find);
-    return NULL; // Max rooms reached
+    logServerEvent("WARNING", "Could not create room '%s': Maximum room limit (%d) reached.", room_name_to_find, MAX_ROOMS);
+    return NULL;
 }
 
-// Adds a client to a given room. Assumes room pointer is valid.
+// Adds a client to a specified chat room.
+// Handles checks for room capacity and if client is already a member.
 // Returns 1 on success, 0 on failure (e.g., room full).
-int add_client_to_room(client_info_t *client, chat_room_t *room) {
-    if (!client || !room) return 0;
+int addClientToRoom(ClientInfo *client, ChatRoom *room)
+{
+    if (!client || !room)
+        return 0;
 
-    pthread_mutex_lock(&room->room_lock); // Lock specific room
+    pthread_mutex_lock(&room->room_lock); // Lock specific room for modifying its member list
 
-    if (room->member_count >= MAX_MEMBERS_PER_ROOM) {
+    if (room->member_count >= MAX_MEMBERS_PER_ROOM)
+    {
         pthread_mutex_unlock(&room->room_lock);
-        log_server_event("INFO", "Client %s failed to join room '%s': Room is full.", client->username, room->name);
+        logServerEvent("INFO", "Client %s failed to join room '%s': Room is full (capacity %d).",
+                       client->username, room->name, MAX_MEMBERS_PER_ROOM);
         return 0; // Room is full
     }
 
-    // Check if client is already in this room (should not happen if logic is correct elsewhere)
-    for (int i = 0; i < room->member_count; ++i) {
-        if (room->members[i] == client) {
+    // Defensive check: ensure client is not already listed as a member
+    for (int i = 0; i < room->member_count; ++i)
+    {
+        if (room->members[i] == client)
+        {
             pthread_mutex_unlock(&room->room_lock);
-            return 1; // Already a member
+            // logServerEvent("DEBUG", "Client %s already in room '%s'. Join request ignored.", client->username, room->name);
+            return 1; // Already a member, treat as success
         }
     }
 
-    // Add client to room
-    room->members[room->member_count] = client;
-    room->member_count++;
-    
+    // Add client to the room
+    room->members[room->member_count++] = client;
     pthread_mutex_unlock(&room->room_lock);
-    
-    // Update client's state
+
+    // Update client's state to reflect current room
     strncpy(client->current_room_name, room->name, ROOM_NAME_BUF_SIZE - 1);
-    return 1; // Success
+    client->current_room_name[ROOM_NAME_BUF_SIZE - 1] = '\0';
+    return 1; // Successfully added
 }
 
-// Removes a client from the room they are currently in.
-void remove_client_from_their_room(client_info_t *client) {
-    if (!client || strlen(client->current_room_name) == 0) {
-        return; // Client is not in any room or invalid client
+// Removes a client from their currently associated chat room.
+// This function is called when a client leaves a room, disconnects, or switches rooms.
+void removeClientFromTheirRoom(ClientInfo *client)
+{
+    if (!client || strlen(client->current_room_name) == 0 || !g_server_state)
+    {
+        return; // Client not in a room or invalid state
     }
 
-    // Find the room first (needs rooms_list_mutex to safely iterate g_server_state->chat_rooms)
-    chat_room_t *room_to_leave = NULL;
+    ChatRoom *room_to_leave = NULL;
+    // Find the room structure. Requires locking rooms_list_mutex.
     pthread_mutex_lock(&g_server_state->rooms_list_mutex);
-    for (int i = 0; i < g_server_state->current_room_count; ++i) {
-        if (strcmp(g_server_state->chat_rooms[i].name, client->current_room_name) == 0) {
+    for (int i = 0; i < g_server_state->current_room_count; ++i)
+    {
+        if (strncmp(g_server_state->chat_rooms[i].name, client->current_room_name, ROOM_NAME_BUF_SIZE) == 0)
+        {
             room_to_leave = &g_server_state->chat_rooms[i];
             break;
         }
     }
     pthread_mutex_unlock(&g_server_state->rooms_list_mutex);
 
-    if (!room_to_leave) {
-        log_server_event("WARNING", "Client %s attempting to leave non-existent room '%s'.", client->username, client->current_room_name);
+    if (!room_to_leave)
+    {
+        logServerEvent("WARNING", "Client %s tried to leave room '%s', but room was not found in active list.",
+                       client->username, client->current_room_name);
         memset(client->current_room_name, 0, ROOM_NAME_BUF_SIZE); // Clear client's room state anyway
         return;
     }
 
-    pthread_mutex_lock(&room_to_leave->room_lock); // Lock the specific room
+    // Now, lock the specific room to modify its member list
+    pthread_mutex_lock(&room_to_leave->room_lock);
     int found_idx = -1;
-    for (int i = 0; i < room_to_leave->member_count; ++i) {
-        if (room_to_leave->members[i] == client) {
+    for (int i = 0; i < room_to_leave->member_count; ++i)
+    {
+        if (room_to_leave->members[i] == client)
+        {
             found_idx = i;
             break;
         }
     }
 
-    if (found_idx != -1) {
+    if (found_idx != -1)
+    {
         // Shift members to fill the gap
-        for (int i = found_idx; i < room_to_leave->member_count - 1; ++i) {
-            room_to_leave->members[i] = room_to_leave->members[i+1];
+        for (int i = found_idx; i < room_to_leave->member_count - 1; ++i)
+        {
+            room_to_leave->members[i] = room_to_leave->members[i + 1];
         }
-        room_to_leave->members[room_to_leave->member_count - 1] = NULL; // Clear last ptr
+        room_to_leave->members[room_to_leave->member_count - 1] = NULL; // Clear last slot
         room_to_leave->member_count--;
     }
+    // If found_idx == -1, client was not in member list - inconsistent state, but proceed.
     pthread_mutex_unlock(&room_to_leave->room_lock);
 
-    // Clear client's current room state
-    char old_room_name[ROOM_NAME_BUF_SIZE]; // For logging
-    strncpy(old_room_name, client->current_room_name, ROOM_NAME_BUF_SIZE-1);
-    memset(client->current_room_name, 0, ROOM_NAME_BUF_SIZE);
-    
-    if (found_idx != -1) { // Log only if client was actually removed
-         log_event_client_left_room(client->username, old_room_name);
+    // Log the event if client was actually removed
+    if (found_idx != -1)
+    {
+        // Log with the name of the room they *were* in, before clearing it.
+        logEventClientLeftRoom(client->username, room_to_leave->name);
     }
+
+    // Clear the client's current room name state
+    memset(client->current_room_name, 0, ROOM_NAME_BUF_SIZE);
+
+    // Note: Room deletion if empty is not implemented as per common chat server designs.
+    // Rooms persist until server shutdown unless explicitly managed otherwise.
+}
+
+// Notifies other members of a room about a client's action (join/leave).
+void notifyRoomOfClientAction(ClientInfo *acting_client, ChatRoom *room, const char *action_verb)
+{
+    if (!room || !acting_client || !action_verb || !g_server_state || !g_server_state->server_is_running)
+        return;
+
+    char notification_content[MESSAGE_BUF_SIZE];
+    snprintf(notification_content, sizeof(notification_content), "User '%s' has %s the room.", acting_client->username, action_verb);
+    notification_content[sizeof(notification_content) - 1] = '\0';
+
+    Message notification_msg;
+    memset(&notification_msg, 0, sizeof(notification_msg));
+    notification_msg.type = MSG_SERVER_NOTIFICATION;
+    strncpy(notification_msg.sender, "SERVER", USERNAME_BUF_SIZE - 1);
+    notification_msg.sender[USERNAME_BUF_SIZE - 1] = '\0';
+    strncpy(notification_msg.room, room->name, ROOM_NAME_BUF_SIZE - 1); // Context for client
+    notification_msg.room[ROOM_NAME_BUF_SIZE - 1] = '\0';
+    strncpy(notification_msg.content, notification_content, MESSAGE_BUF_SIZE - 1);
+    notification_msg.content[MESSAGE_BUF_SIZE - 1] = '\0';
+
+    // Send to all members of the room, EXCLUDING the client who performed the action.
+    broadcastMessageToRoomMembers(room, &notification_msg, acting_client->username);
 }
 
 // Handles a client's request to join a room.
-void handle_join_room_request(client_info_t *client, const char *room_name_requested) {
-    if (!is_valid_room_name(room_name_requested)) {
-        send_error_to_client(client->socket_fd, "Invalid room name format.");
+void handleJoinRoomRequest(ClientInfo *client, const char *room_name_requested)
+{
+    if (!client || !client->is_active)
+        return;
+
+    if (!isValidRoomName(room_name_requested))
+    {
+        sendErrorToClient(client->socket_fd, "Invalid room name format. Must be alphanumeric, 1-32 chars, no spaces.");
         return;
     }
-    
-    char old_room_name_for_log[ROOM_NAME_BUF_SIZE];
-    int was_in_room = strlen(client->current_room_name) > 0;
-    if(was_in_room) strncpy(old_room_name_for_log, client->current_room_name, ROOM_NAME_BUF_SIZE-1);
 
+    char old_room_name_log[ROOM_NAME_BUF_SIZE];
+    memset(old_room_name_log, 0, sizeof(old_room_name_log));
+    int was_in_another_room = 0;
 
-    // If client is already in a room, leave it first.
-    if (was_in_room) {
-        if (strcmp(client->current_room_name, room_name_requested) == 0) {
-            send_success_with_room_to_client(client->socket_fd, "You are already in this room.", room_name_requested);
+    // If client is already in a room, handle leaving that room first
+    if (strlen(client->current_room_name) > 0)
+    {
+        if (strncmp(client->current_room_name, room_name_requested, ROOM_NAME_BUF_SIZE) == 0)
+        {
+            // Client is trying to join the room they are already in
+            sendSuccessWithRoomToClient(client->socket_fd, "You are already in this room.", room_name_requested);
             return;
         }
-        // Notify old room members about departure
-        chat_room_t* old_room = find_or_create_chat_room(client->current_room_name); // Should exist
-        if (old_room) {
-            char notification_msg_content[MESSAGE_BUF_SIZE];
-            snprintf(notification_msg_content, sizeof(notification_msg_content), "%s has left the room.", client->username);
-            message_t leave_notification;
-            memset(&leave_notification, 0, sizeof(leave_notification));
-            leave_notification.type = MSG_SERVER_NOTIFICATION;
-            strncpy(leave_notification.sender, "SERVER", USERNAME_BUF_SIZE-1);
-            strncpy(leave_notification.room, old_room->name, ROOM_NAME_BUF_SIZE-1);
-            strncpy(leave_notification.content, notification_msg_content, MESSAGE_BUF_SIZE-1);
-            broadcast_message_to_room_members(old_room, &leave_notification, client->username); // Exclude self
+        // Client is switching rooms
+        strncpy(old_room_name_log, client->current_room_name, ROOM_NAME_BUF_SIZE - 1);
+        old_room_name_log[ROOM_NAME_BUF_SIZE - 1] = '\0';
+        was_in_another_room = 1;
+
+        ChatRoom *old_room = findOrCreateChatRoom(client->current_room_name); // Should always find it if client->current_room_name is set
+        if (old_room)
+        {
+            notifyRoomOfClientAction(client, old_room, "left"); // Notify old room
         }
-        remove_client_from_their_room(client); // This also logs the leave
+        removeClientFromTheirRoom(client); // This also logs the "left room" part for the old room.
     }
 
-    chat_room_t *target_room = find_or_create_chat_room(room_name_requested);
-    if (!target_room) {
-        send_error_to_client(client->socket_fd, "Failed to find or create the room (server limit may be reached).");
+    // Find or create the target room
+    ChatRoom *target_room = findOrCreateChatRoom(room_name_requested);
+    if (!target_room)
+    {
+        sendErrorToClient(client->socket_fd, "Failed to find or create the requested room (server limit may be reached).");
+        // If client was switching rooms, they are now in no room. This needs careful state management if old room removal failed.
+        // However, findOrCreateChatRoom failure is rare (only if MAX_ROOMS hit).
         return;
     }
 
-    if (add_client_to_room(client, target_room)) {
-        send_success_with_room_to_client(client->socket_fd, "Joined room successfully.", target_room->name);
-        
-        if(was_in_room) {
-            log_event_client_switched_room(client->username, old_room_name_for_log, target_room->name);
-        } else {
-            log_event_client_joined_room(client->username, target_room->name);
+    // Attempt to add client to the target room
+    if (addClientToRoom(client, target_room))
+    {
+        sendSuccessWithRoomToClient(client->socket_fd, "Joined room", target_room->name); // Short success message
+
+        // Log event: either switched or joined for the first time/from no room
+        if (was_in_another_room)
+        {
+            logEventClientSwitchedRoom(client->username, old_room_name_log, target_room->name);
         }
-
-        // Notify new room members about arrival
-        char notification_msg_content[MESSAGE_BUF_SIZE];
-        snprintf(notification_msg_content, sizeof(notification_msg_content), "%s has joined the room.", client->username);
-        message_t join_notification;
-        memset(&join_notification, 0, sizeof(join_notification));
-        join_notification.type = MSG_SERVER_NOTIFICATION;
-        strncpy(join_notification.sender, "SERVER", USERNAME_BUF_SIZE-1);
-        strncpy(join_notification.room, target_room->name, ROOM_NAME_BUF_SIZE-1);
-        strncpy(join_notification.content, notification_msg_content, MESSAGE_BUF_SIZE-1);
-        broadcast_message_to_room_members(target_room, &join_notification, client->username); // Exclude self
-
-    } else {
-        send_error_to_client(client->socket_fd, "Failed to join room (it might be full).");
-        // If client was in old_room and failed to join new one, they are now in no room.
-        // This state is consistent.
+        else
+        {
+            logEventClientJoinedRoom(client->username, target_room->name);
+        }
+        notifyRoomOfClientAction(client, target_room, "joined"); // Notify new room
+    }
+    else
+    {
+        // Failed to add (e.g., room full)
+        sendErrorToClient(client->socket_fd, "Failed to join room (it might be full or an internal error occurred).");
+        // Client's current_room_name should still be empty or the old room if they were switching and add failed.
+        // addClientToRoom only updates client->current_room_name on success.
     }
 }
 
-void handle_leave_room_request(client_info_t *client) {
-    if (strlen(client->current_room_name) == 0) {
-        send_error_to_client(client->socket_fd, "You are not in any room.");
+// Handles a client's request to leave their current room.
+void handleLeaveRoomRequest(ClientInfo *client)
+{
+    if (!client || !client->is_active)
+        return;
+
+    if (strlen(client->current_room_name) == 0)
+    {
+        sendErrorToClient(client->socket_fd, "You are not currently in any room.");
         return;
     }
-    
-    char room_that_was_left[ROOM_NAME_BUF_SIZE];
-    strncpy(room_that_was_left, client->current_room_name, ROOM_NAME_BUF_SIZE-1);
 
-    // Notify room members about departure
-    chat_room_t* old_room = find_or_create_chat_room(client->current_room_name); // Should exist
-    if (old_room) {
-        char notification_msg_content[MESSAGE_BUF_SIZE];
-        snprintf(notification_msg_content, sizeof(notification_msg_content), "%s has left the room.", client->username);
-        message_t leave_notification;
-        memset(&leave_notification, 0, sizeof(leave_notification));
-        leave_notification.type = MSG_SERVER_NOTIFICATION;
-        strncpy(leave_notification.sender, "SERVER", USERNAME_BUF_SIZE-1);
-        strncpy(leave_notification.room, old_room->name, ROOM_NAME_BUF_SIZE-1);
-        strncpy(leave_notification.content, notification_msg_content, MESSAGE_BUF_SIZE-1);
-        broadcast_message_to_room_members(old_room, &leave_notification, client->username); // Exclude self
+    ChatRoom *room_being_left = findOrCreateChatRoom(client->current_room_name); // Should find existing
+    if (room_being_left)
+    {
+        notifyRoomOfClientAction(client, room_being_left, "left"); // Notify before actual removal
     }
-    
-    remove_client_from_their_room(client); // This logs the leave internally
-    send_success_to_client(client->socket_fd, "You have left the room.");
+    // removeClientFromTheirRoom logs the leave and clears client->current_room_name
+    removeClientFromTheirRoom(client);
+    sendSuccessToClient(client->socket_fd, "You have successfully left the room.");
 }
 
-// Handles a broadcast message from a client.
-void handle_broadcast_request(client_info_t *client_sender, const char *message_content) {
-    if (strlen(client_sender->current_room_name) == 0) {
-        send_error_to_client(client_sender->socket_fd, "You must be in a room to broadcast.");
+// Handles a client's request to broadcast a message to their current room.
+void handleBroadcastRequest(ClientInfo *client_sender, const char *message_content)
+{
+    if (!client_sender || !client_sender->is_active)
+        return;
+
+    if (strlen(client_sender->current_room_name) == 0)
+    {
+        sendErrorToClient(client_sender->socket_fd, "You must be in a room to broadcast a message.");
         return;
     }
-    if (strlen(message_content) == 0 || strlen(message_content) >= MESSAGE_BUF_SIZE) {
-        send_error_to_client(client_sender->socket_fd, "Invalid message content for broadcast.");
+    if (strlen(message_content) == 0 || strlen(message_content) >= MESSAGE_BUF_SIZE)
+    {
+        sendErrorToClient(client_sender->socket_fd, "Invalid message content: Cannot be empty or too long.");
         return;
     }
 
-    chat_room_t *current_room = find_or_create_chat_room(client_sender->current_room_name); // Should exist
-    if (!current_room) {
-        send_error_to_client(client_sender->socket_fd, "Error: Your current room seems to be invalid.");
-        log_server_event("ERROR", "Client %s in room %s which was not found during broadcast.", client_sender->username, client_sender->current_room_name);
+    ChatRoom *current_room = findOrCreateChatRoom(client_sender->current_room_name); // Should find
+    if (!current_room)
+    {
+        // This indicates a server-side inconsistency if client->current_room_name is set but room not found.
+        sendErrorToClient(client_sender->socket_fd, "Error: Your current room seems to be invalid on the server.");
+        logServerEvent("ERROR", "Client %s in room '%s' which was not found during broadcast attempt.",
+                       client_sender->username, client_sender->current_room_name);
         return;
     }
 
-    message_t broadcast_msg_to_send;
-    memset(&broadcast_msg_to_send, 0, sizeof(broadcast_msg_to_send));
-    broadcast_msg_to_send.type = MSG_BROADCAST;
-    strncpy(broadcast_msg_to_send.sender, client_sender->username, USERNAME_BUF_SIZE - 1);
-    strncpy(broadcast_msg_to_send.room, current_room->name, ROOM_NAME_BUF_SIZE - 1);
-    strncpy(broadcast_msg_to_send.content, message_content, MESSAGE_BUF_SIZE - 1);
+    // Prepare the broadcast message
+    Message broadcast_msg;
+    memset(&broadcast_msg, 0, sizeof(broadcast_msg));
+    broadcast_msg.type = MSG_BROADCAST; // Client receiver threads will identify this type
+    strncpy(broadcast_msg.sender, client_sender->username, USERNAME_BUF_SIZE - 1);
+    broadcast_msg.sender[USERNAME_BUF_SIZE - 1] = '\0';
+    strncpy(broadcast_msg.room, current_room->name, ROOM_NAME_BUF_SIZE - 1);
+    broadcast_msg.room[ROOM_NAME_BUF_SIZE - 1] = '\0';
+    strncpy(broadcast_msg.content, message_content, MESSAGE_BUF_SIZE - 1);
+    broadcast_msg.content[MESSAGE_BUF_SIZE - 1] = '\0';
 
-    // Send to all members of the room, including the sender (as per typical chat behavior)
-    broadcast_message_to_room_members(current_room, &broadcast_msg_to_send, NULL); // NULL exclude means send to all
+    // Send to all members in the room (including the sender themselves, as per typical chat behavior)
+    broadcastMessageToRoomMembers(current_room, &broadcast_msg, NULL); // NULL for exclude_username means send to all
 
-    log_event_broadcast(client_sender->username, current_room->name, message_content);
-    
-    // Send confirmation to the sender client (as per PDF page 4 "Message sent to room 'teamchat'")
-    char confirmation_text[100];
+    // Log the broadcast event (server-side)
+    logEventBroadcast(client_sender->username, current_room->name, message_content);
+
+    // Send confirmation to the sender
+    char confirmation_text[128];
     snprintf(confirmation_text, sizeof(confirmation_text), "Message sent to room '%s'", current_room->name);
-    send_success_to_client(client_sender->socket_fd, confirmation_text);
+    confirmation_text[sizeof(confirmation_text) - 1] = '\0';
+    sendSuccessToClient(client_sender->socket_fd, confirmation_text);
 }
 
+// Handles a client's request to send a private message (whisper) to another user.
+void handleWhisperRequest(ClientInfo *client_sender, const char *receiver_username_str, const char *message_content)
+{
+    if (!client_sender || !client_sender->is_active)
+        return;
 
-// Handles a whisper message from a client.
-void handle_whisper_request(client_info_t *client_sender, const char *receiver_username, const char *message_content) {
-    if (!is_valid_username(receiver_username)) {
-        send_error_to_client(client_sender->socket_fd, "Invalid recipient username for whisper.");
+    if (!isValidUsername(receiver_username_str))
+    {
+        sendErrorToClient(client_sender->socket_fd, "Invalid recipient username format for whisper.");
         return;
     }
-    if (strlen(message_content) == 0 || strlen(message_content) >= MESSAGE_BUF_SIZE) {
-        send_error_to_client(client_sender->socket_fd, "Invalid message content for whisper.");
+    if (strlen(message_content) == 0 || strlen(message_content) >= MESSAGE_BUF_SIZE)
+    {
+        sendErrorToClient(client_sender->socket_fd, "Invalid message content for whisper: Cannot be empty or too long.");
         return;
     }
-    if (strcmp(client_sender->username, receiver_username) == 0) {
-        send_error_to_client(client_sender->socket_fd, "You cannot whisper to yourself.");
+    if (strncmp(client_sender->username, receiver_username_str, USERNAME_BUF_SIZE) == 0)
+    {
+        sendErrorToClient(client_sender->socket_fd, "You cannot whisper a message to yourself.");
         return;
     }
 
-    pthread_mutex_lock(&g_server_state->clients_list_mutex); // Lock before finding client
-    client_info_t *receiver_client = find_client_by_username(receiver_username); // find_client needs review for locking
+    ClientInfo *receiver_client = NULL;
+    // Find the recipient client. Requires locking clients_list_mutex.
+    pthread_mutex_lock(&g_server_state->clients_list_mutex);
+    receiver_client = findClientByUsername(receiver_username_str); // This utility expects lock to be held
     pthread_mutex_unlock(&g_server_state->clients_list_mutex);
 
-    if (!receiver_client || !receiver_client->is_active) {
-        send_error_to_client(client_sender->socket_fd, "Recipient user not found or is offline.");
+    if (!receiver_client || !receiver_client->is_active) // Check if found and if that client is still active
+    {
+        sendErrorToClient(client_sender->socket_fd, "Recipient user not found or is currently offline.");
         return;
     }
 
-    message_t whisper_msg_to_send;
-    memset(&whisper_msg_to_send, 0, sizeof(whisper_msg_to_send));
-    whisper_msg_to_send.type = MSG_WHISPER;
-    strncpy(whisper_msg_to_send.sender, client_sender->username, USERNAME_BUF_SIZE - 1);
-    strncpy(whisper_msg_to_send.receiver, receiver_username, USERNAME_BUF_SIZE - 1); // For receiver's context if needed
-    strncpy(whisper_msg_to_send.content, message_content, MESSAGE_BUF_SIZE - 1);
+    // Prepare the whisper message
+    Message whisper_msg;
+    memset(&whisper_msg, 0, sizeof(whisper_msg));
+    whisper_msg.type = MSG_WHISPER; // Client receiver threads will identify this type
+    strncpy(whisper_msg.sender, client_sender->username, USERNAME_BUF_SIZE - 1);
+    whisper_msg.sender[USERNAME_BUF_SIZE - 1] = '\0';
+    strncpy(whisper_msg.receiver, receiver_username_str, USERNAME_BUF_SIZE - 1); // For recipient's context
+    whisper_msg.receiver[USERNAME_BUF_SIZE - 1] = '\0';
+    strncpy(whisper_msg.content, message_content, MESSAGE_BUF_SIZE - 1);
+    whisper_msg.content[MESSAGE_BUF_SIZE - 1] = '\0';
 
-    if (send_message(receiver_client->socket_fd, &whisper_msg_to_send)) {
-        // Send confirmation to the sender client (as per PDF page 4 "Whisper sent to john42")
-        char confirmation_text[100];
-        snprintf(confirmation_text, sizeof(confirmation_text), "Whisper sent to %s", receiver_username);
-        send_success_to_client(client_sender->socket_fd, confirmation_text);
-        log_event_whisper(client_sender->username, receiver_username);
-    } else {
-        send_error_to_client(client_sender->socket_fd, "Failed to deliver whisper (recipient connection issue?).");
-        log_server_event("ERROR", "Failed to send whisper from %s to %s socket.", client_sender->username, receiver_username);
+    // Send the message to the recipient's socket
+    if (sendMessage(receiver_client->socket_fd, &whisper_msg))
+    {
+        char confirmation_text[128];
+        snprintf(confirmation_text, sizeof(confirmation_text), "Whisper successfully sent to %s", receiver_username_str);
+        confirmation_text[sizeof(confirmation_text) - 1] = '\0';
+        sendSuccessToClient(client_sender->socket_fd, confirmation_text);
+        logEventWhisper(client_sender->username, receiver_username_str, message_content); // Log full content for server record if desired, or preview
+    }
+    else
+    {
+        sendErrorToClient(client_sender->socket_fd, "Failed to deliver whisper message (recipient connection issue or server error).");
+        logServerEvent("ERROR", "Failed to send whisper message from %s to %s via socket %d.",
+                       client_sender->username, receiver_username_str, receiver_client->socket_fd);
     }
 }
 
+// Broadcasts a message to all active members of a given room.
+// Can optionally exclude one user (typically the sender of a broadcast or notifier of an action).
+void broadcastMessageToRoomMembers(ChatRoom *room, const Message *message_to_send, const char *exclude_username)
+{
+    if (!room || !message_to_send || !g_server_state)
+        return;
 
-// Helper to send a message to all members of a room.
-// If exclude_username is not NULL, that user will be skipped.
-void broadcast_message_to_room_members(chat_room_t *room, const message_t *message_to_send, const char *exclude_username) {
-    if (!room || !message_to_send) return;
-
-    pthread_mutex_lock(&room->room_lock); // Lock the room for safe iteration
-    for (int i = 0; i < room->member_count; ++i) {
-        client_info_t *member = room->members[i];
-        if (member && member->is_active) {
-            if (exclude_username && strcmp(member->username, exclude_username) == 0) {
-                continue; // Skip excluded user
+    pthread_mutex_lock(&room->room_lock); // Lock the room to safely iterate its members
+    for (int i = 0; i < room->member_count; ++i)
+    {
+        ClientInfo *member = room->members[i];
+        if (member && member->is_active && member->socket_fd >= 0) // Check if member is valid, active, and has a socket
+        {
+            if (exclude_username && strncmp(member->username, exclude_username, USERNAME_BUF_SIZE) == 0)
+            {
+                continue; // Skip the excluded user
             }
-            send_message(member->socket_fd, message_to_send);
+            // Send the message. sendMessage handles errors internally (e.g., client disconnected).
+            if (!sendMessage(member->socket_fd, message_to_send))
+            {
+                // Log if sending to a specific member failed, might indicate that member disconnected abruptly.
+                // The main handler for that client will eventually clean them up.
+                // logServerEvent("DEBUG", "Failed to send broadcast/notification to %s in room %s (socket %d). Client might have disconnected.",
+                //                member->username, room->name, member->socket_fd);
+            }
         }
     }
     pthread_mutex_unlock(&room->room_lock);

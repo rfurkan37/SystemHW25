@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "test_syllable_data": "plaintext",
+        "test_lowercase_data": "plaintext",
+        "signal.h": "c"
+    }
+}
