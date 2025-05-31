@@ -1,0 +1,299 @@
+2025-05-31 20:30:55 - [INFO] Server logging system initialized. Log file: server.log
+2025-05-31 20:30:55 - [INFO] Room management system initialized successfully.
+2025-05-31 20:30:55 - [INFO] File transfer system initialized with 5 worker thread(s).
+2025-05-31 20:30:55 - [INFO] Server state and all subsystems initialized successfully.
+2025-05-31 20:30:55 - [INFO] Server listening on port 5000...
+2025-05-31 20:30:55 - [INFO] Server is now accepting client connections on fd 4.
+2025-05-31 20:30:55 - [INFO] File worker thread (ID 2) started.
+2025-05-31 20:30:55 - [INFO] File worker thread (ID 1) started.
+2025-05-31 20:30:55 - [INFO] File worker thread (ID 0) started.
+2025-05-31 20:30:55 - [INFO] File worker thread (ID 3) started.
+2025-05-31 20:30:55 - [INFO] File worker thread (ID 4) started.
+2025-05-31 20:31:05 - [CONNECT] New client connected: recep from 127.0.0.1
+2025-05-31 20:31:13 - [DISCONNECT] Client recep disconnected.
+2025-05-31 20:31:17 - [CONNECT] New client connected: user1 from 127.0.0.1
+2025-05-31 20:31:17 - [CONNECT] New client connected: user2 from 127.0.0.1
+2025-05-31 20:31:17 - [CONNECT] New client connected: user3 from 127.0.0.1
+2025-05-31 20:31:17 - [CONNECT] New client connected: user4 from 127.0.0.1
+2025-05-31 20:31:17 - [CONNECT] New client connected: user5 from 127.0.0.1
+2025-05-31 20:31:17 - [CONNECT] New client connected: user6 from 127.0.0.1
+2025-05-31 20:31:17 - [CONNECT] New client connected: user7 from 127.0.0.1
+2025-05-31 20:31:17 - [CONNECT] New client connected: user8 from 127.0.0.1
+2025-05-31 20:31:18 - [CONNECT] New client connected: user9 from 127.0.0.1
+2025-05-31 20:31:18 - [CONNECT] New client connected: user10 from 127.0.0.1
+2025-05-31 20:31:18 - [INFO] Room 'projectX' was created.
+2025-05-31 20:31:18 - [COMMAND] user1 joined room 'projectX'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user11 from 127.0.0.1
+2025-05-31 20:31:18 - [INFO] Room 'general' was created.
+2025-05-31 20:31:18 - [COMMAND] user2 joined room 'general'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user12 from 127.0.0.1
+2025-05-31 20:31:18 - [COMMAND] user3 joined room 'projectX'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user13 from 127.0.0.1
+2025-05-31 20:31:18 - [COMMAND] user4 joined room 'general'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user14 from 127.0.0.1
+2025-05-31 20:31:18 - [COMMAND] user5 joined room 'projectX'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user15 from 127.0.0.1
+2025-05-31 20:31:18 - [COMMAND] user6 joined room 'general'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user16 from 127.0.0.1
+2025-05-31 20:31:18 - [COMMAND] user7 joined room 'projectX'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user17 from 127.0.0.1
+2025-05-31 20:31:18 - [COMMAND] user8 joined room 'general'
+2025-05-31 20:31:18 - [CONNECT] New client connected: user18 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user9 joined room 'projectX'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user19 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user10 joined room 'general'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user20 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user1 broadcasted to 'projectX'
+2025-05-31 20:31:19 - [COMMAND] user11 joined room 'projectX'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user21 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user2 broadcasted to 'general'
+2025-05-31 20:31:19 - [COMMAND] user12 joined room 'general'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user22 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user3 broadcasted to 'projectX'
+2025-05-31 20:31:19 - [COMMAND] user13 joined room 'projectX'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user23 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user4 broadcasted to 'general'
+2025-05-31 20:31:19 - [COMMAND] user14 joined room 'general'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user24 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user5 broadcasted to 'projectX'
+2025-05-31 20:31:19 - [COMMAND] user15 joined room 'projectX'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user25 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user6 broadcasted to 'general'
+2025-05-31 20:31:19 - [COMMAND] user16 joined room 'general'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user26 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user7 broadcasted to 'projectX'
+2025-05-31 20:31:19 - [COMMAND] user17 joined room 'projectX'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user27 from 127.0.0.1
+2025-05-31 20:31:19 - [COMMAND] user8 broadcasted to 'general'
+2025-05-31 20:31:19 - [COMMAND] user18 joined room 'general'
+2025-05-31 20:31:19 - [CONNECT] New client connected: user28 from 127.0.0.1
+2025-05-31 20:31:20 - [COMMAND] user9 broadcasted to 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user19 joined room 'projectX'
+2025-05-31 20:31:20 - [CONNECT] New client connected: user29 from 127.0.0.1
+2025-05-31 20:31:20 - [COMMAND] user10 broadcasted to 'general'
+2025-05-31 20:31:20 - [COMMAND] user20 joined room 'general'
+2025-05-31 20:31:20 - [COMMAND] user1 sent whisper to user15
+2025-05-31 20:31:20 - [CONNECT] New client connected: user30 from 127.0.0.1
+2025-05-31 20:31:20 - [COMMAND] user11 broadcasted to 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user21 joined room 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user2 sent whisper to user12
+2025-05-31 20:31:20 - [COMMAND] user12 broadcasted to 'general'
+2025-05-31 20:31:20 - [COMMAND] user22 joined room 'general'
+2025-05-31 20:31:20 - [COMMAND] user3 sent whisper to user15
+2025-05-31 20:31:20 - [COMMAND] user13 broadcasted to 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user23 joined room 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user4 sent whisper to user12
+2025-05-31 20:31:20 - [COMMAND] user14 broadcasted to 'general'
+2025-05-31 20:31:20 - [COMMAND] user24 joined room 'general'
+2025-05-31 20:31:20 - [COMMAND] user5 sent whisper to user15
+2025-05-31 20:31:20 - [COMMAND] user15 broadcasted to 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user25 joined room 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user6 sent whisper to user12
+2025-05-31 20:31:20 - [COMMAND] user16 broadcasted to 'general'
+2025-05-31 20:31:20 - [COMMAND] user26 joined room 'general'
+2025-05-31 20:31:20 - [COMMAND] user7 sent whisper to user15
+2025-05-31 20:31:20 - [COMMAND] user17 broadcasted to 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user27 joined room 'projectX'
+2025-05-31 20:31:20 - [COMMAND] user8 sent whisper to user12
+2025-05-31 20:31:20 - [COMMAND] user18 broadcasted to 'general'
+2025-05-31 20:31:20 - [COMMAND] user28 joined room 'general'
+2025-05-31 20:31:21 - [COMMAND] user9 sent whisper to user15
+2025-05-31 20:31:21 - [COMMAND] user19 broadcasted to 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user29 joined room 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user10 sent whisper to user12
+2025-05-31 20:31:21 - [COMMAND] user20 broadcasted to 'general'
+2025-05-31 20:31:21 - [COMMAND] user1 left room 'projectX'
+2025-05-31 20:31:21 - [ROOM] user 'user1' left room 'projectX', joined 'general'
+2025-05-31 20:31:21 - [INFO] Client user30 failed to join room 'general': Room is full (capacity 15).
+2025-05-31 20:31:21 - [COMMAND] user11 sent whisper to user15
+2025-05-31 20:31:21 - [COMMAND] user21 broadcasted to 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user2 left room 'general'
+2025-05-31 20:31:21 - [ROOM] user 'user2' left room 'general', joined 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user22 broadcasted to 'general'
+2025-05-31 20:31:21 - [COMMAND] user3 left room 'projectX'
+2025-05-31 20:31:21 - [ROOM] user 'user3' left room 'projectX', joined 'general'
+2025-05-31 20:31:21 - [COMMAND] user13 sent whisper to user15
+2025-05-31 20:31:21 - [COMMAND] user23 broadcasted to 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user4 left room 'general'
+2025-05-31 20:31:21 - [ROOM] user 'user4' left room 'general', joined 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user14 sent whisper to user12
+2025-05-31 20:31:21 - [COMMAND] user24 broadcasted to 'general'
+2025-05-31 20:31:21 - [COMMAND] user5 left room 'projectX'
+2025-05-31 20:31:21 - [ROOM] user 'user5' left room 'projectX', joined 'general'
+2025-05-31 20:31:21 - [COMMAND] user25 broadcasted to 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user6 left room 'general'
+2025-05-31 20:31:21 - [ROOM] user 'user6' left room 'general', joined 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user16 sent whisper to user12
+2025-05-31 20:31:21 - [COMMAND] user26 broadcasted to 'general'
+2025-05-31 20:31:21 - [COMMAND] user7 left room 'projectX'
+2025-05-31 20:31:21 - [ROOM] user 'user7' left room 'projectX', joined 'general'
+2025-05-31 20:31:21 - [COMMAND] user17 sent whisper to user15
+2025-05-31 20:31:21 - [COMMAND] user27 broadcasted to 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user8 left room 'general'
+2025-05-31 20:31:21 - [ROOM] user 'user8' left room 'general', joined 'projectX'
+2025-05-31 20:31:21 - [COMMAND] user18 sent whisper to user12
+2025-05-31 20:31:21 - [COMMAND] user28 broadcasted to 'general'
+2025-05-31 20:31:22 - [COMMAND] user9 left room 'projectX'
+2025-05-31 20:31:22 - [ROOM] user 'user9' left room 'projectX', joined 'general'
+2025-05-31 20:31:22 - [COMMAND] user19 sent whisper to user15
+2025-05-31 20:31:22 - [COMMAND] user29 broadcasted to 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user10 left room 'general'
+2025-05-31 20:31:22 - [ROOM] user 'user10' left room 'general', joined 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user20 sent whisper to user12
+2025-05-31 20:31:22 - [COMMAND] user1 broadcasted to 'general'
+2025-05-31 20:31:22 - [COMMAND] user11 left room 'projectX'
+2025-05-31 20:31:22 - [ROOM] user 'user11' left room 'projectX', joined 'general'
+2025-05-31 20:31:22 - [COMMAND] user21 sent whisper to user15
+2025-05-31 20:31:22 - [COMMAND] user2 broadcasted to 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user12 left room 'general'
+2025-05-31 20:31:22 - [ROOM] user 'user12' left room 'general', joined 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user22 sent whisper to user12
+2025-05-31 20:31:22 - [COMMAND] user3 broadcasted to 'general'
+2025-05-31 20:31:22 - [COMMAND] user13 left room 'projectX'
+2025-05-31 20:31:22 - [ROOM] user 'user13' left room 'projectX', joined 'general'
+2025-05-31 20:31:22 - [COMMAND] user23 sent whisper to user15
+2025-05-31 20:31:22 - [COMMAND] user4 broadcasted to 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user14 left room 'general'
+2025-05-31 20:31:22 - [ROOM] user 'user14' left room 'general', joined 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user24 sent whisper to user12
+2025-05-31 20:31:22 - [COMMAND] user5 broadcasted to 'general'
+2025-05-31 20:31:22 - [COMMAND] user15 left room 'projectX'
+2025-05-31 20:31:22 - [ROOM] user 'user15' left room 'projectX', joined 'general'
+2025-05-31 20:31:22 - [COMMAND] user25 sent whisper to user15
+2025-05-31 20:31:22 - [COMMAND] user6 broadcasted to 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user16 left room 'general'
+2025-05-31 20:31:22 - [ROOM] user 'user16' left room 'general', joined 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user26 sent whisper to user12
+2025-05-31 20:31:22 - [COMMAND] user7 broadcasted to 'general'
+2025-05-31 20:31:22 - [COMMAND] user17 left room 'projectX'
+2025-05-31 20:31:22 - [ROOM] user 'user17' left room 'projectX', joined 'general'
+2025-05-31 20:31:22 - [COMMAND] user27 sent whisper to user15
+2025-05-31 20:31:22 - [COMMAND] user8 broadcasted to 'projectX'
+2025-05-31 20:31:22 - [COMMAND] user18 left room 'general'
+2025-05-31 20:31:22 - [ROOM] user 'user18' left room 'general', joined 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user28 sent whisper to user12
+2025-05-31 20:31:23 - [COMMAND] user9 broadcasted to 'general'
+2025-05-31 20:31:23 - [COMMAND] user19 left room 'projectX'
+2025-05-31 20:31:23 - [ROOM] user 'user19' left room 'projectX', joined 'general'
+2025-05-31 20:31:23 - [COMMAND] user29 sent whisper to user15
+2025-05-31 20:31:23 - [COMMAND] user10 broadcasted to 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user20 left room 'general'
+2025-05-31 20:31:23 - [ROOM] user 'user20' left room 'general', joined 'projectX'
+2025-05-31 20:31:23 - [DISCONNECT] Client user1 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user1 left room 'general'
+2025-05-31 20:31:23 - [COMMAND] user30 sent whisper to user12
+2025-05-31 20:31:23 - [COMMAND] user11 broadcasted to 'general'
+2025-05-31 20:31:23 - [COMMAND] user21 left room 'projectX'
+2025-05-31 20:31:23 - [ROOM] user 'user21' left room 'projectX', joined 'general'
+2025-05-31 20:31:23 - [DISCONNECT] Client user2 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user2 left room 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user12 broadcasted to 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user22 left room 'general'
+2025-05-31 20:31:23 - [ROOM] user 'user22' left room 'general', joined 'projectX'
+2025-05-31 20:31:23 - [DISCONNECT] Client user3 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user3 left room 'general'
+2025-05-31 20:31:23 - [COMMAND] user13 broadcasted to 'general'
+2025-05-31 20:31:23 - [COMMAND] user23 left room 'projectX'
+2025-05-31 20:31:23 - [ROOM] user 'user23' left room 'projectX', joined 'general'
+2025-05-31 20:31:23 - [DISCONNECT] Client user4 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user4 left room 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user14 broadcasted to 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user24 left room 'general'
+2025-05-31 20:31:23 - [ROOM] user 'user24' left room 'general', joined 'projectX'
+2025-05-31 20:31:23 - [DISCONNECT] Client user5 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user5 left room 'general'
+2025-05-31 20:31:23 - [COMMAND] user15 broadcasted to 'general'
+2025-05-31 20:31:23 - [COMMAND] user25 left room 'projectX'
+2025-05-31 20:31:23 - [ROOM] user 'user25' left room 'projectX', joined 'general'
+2025-05-31 20:31:23 - [DISCONNECT] Client user6 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user6 left room 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user16 broadcasted to 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user26 left room 'general'
+2025-05-31 20:31:23 - [ROOM] user 'user26' left room 'general', joined 'projectX'
+2025-05-31 20:31:23 - [DISCONNECT] Client user7 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user7 left room 'general'
+2025-05-31 20:31:23 - [COMMAND] user17 broadcasted to 'general'
+2025-05-31 20:31:23 - [COMMAND] user27 left room 'projectX'
+2025-05-31 20:31:23 - [ROOM] user 'user27' left room 'projectX', joined 'general'
+2025-05-31 20:31:23 - [DISCONNECT] Client user8 disconnected.
+2025-05-31 20:31:23 - [COMMAND] user8 left room 'projectX'
+2025-05-31 20:31:23 - [COMMAND] user18 broadcasted to 'projectX'
+2025-05-31 20:31:24 - [COMMAND] user28 left room 'general'
+2025-05-31 20:31:24 - [ROOM] user 'user28' left room 'general', joined 'projectX'
+2025-05-31 20:31:24 - [DISCONNECT] Client user9 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user9 left room 'general'
+2025-05-31 20:31:24 - [COMMAND] user19 broadcasted to 'general'
+2025-05-31 20:31:24 - [COMMAND] user29 left room 'projectX'
+2025-05-31 20:31:24 - [ROOM] user 'user29' left room 'projectX', joined 'general'
+2025-05-31 20:31:24 - [DISCONNECT] Client user10 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user10 left room 'projectX'
+2025-05-31 20:31:24 - [COMMAND] user20 broadcasted to 'projectX'
+2025-05-31 20:31:24 - [COMMAND] user30 joined room 'projectX'
+2025-05-31 20:31:24 - [DISCONNECT] Client user11 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user11 left room 'general'
+2025-05-31 20:31:24 - [COMMAND] user21 broadcasted to 'general'
+2025-05-31 20:31:24 - [DISCONNECT] Client user12 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user12 left room 'projectX'
+2025-05-31 20:31:24 - [COMMAND] user22 broadcasted to 'projectX'
+2025-05-31 20:31:24 - [DISCONNECT] Client user13 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user13 left room 'general'
+2025-05-31 20:31:24 - [COMMAND] user23 broadcasted to 'general'
+2025-05-31 20:31:24 - [DISCONNECT] Client user14 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user14 left room 'projectX'
+2025-05-31 20:31:24 - [COMMAND] user24 broadcasted to 'projectX'
+2025-05-31 20:31:24 - [DISCONNECT] Client user15 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user15 left room 'general'
+2025-05-31 20:31:24 - [COMMAND] user25 broadcasted to 'general'
+2025-05-31 20:31:24 - [DISCONNECT] Client user16 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user16 left room 'projectX'
+2025-05-31 20:31:24 - [COMMAND] user26 broadcasted to 'projectX'
+2025-05-31 20:31:24 - [DISCONNECT] Client user17 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user17 left room 'general'
+2025-05-31 20:31:24 - [COMMAND] user27 broadcasted to 'general'
+2025-05-31 20:31:24 - [DISCONNECT] Client user18 disconnected.
+2025-05-31 20:31:24 - [COMMAND] user18 left room 'projectX'
+2025-05-31 20:31:25 - [COMMAND] user28 broadcasted to 'projectX'
+2025-05-31 20:31:25 - [DISCONNECT] Client user19 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user19 left room 'general'
+2025-05-31 20:31:25 - [COMMAND] user29 broadcasted to 'general'
+2025-05-31 20:31:25 - [DISCONNECT] Client user20 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user20 left room 'projectX'
+2025-05-31 20:31:25 - [COMMAND] user30 broadcasted to 'projectX'
+2025-05-31 20:31:25 - [DISCONNECT] Client user21 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user21 left room 'general'
+2025-05-31 20:31:25 - [DISCONNECT] Client user22 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user22 left room 'projectX'
+2025-05-31 20:31:25 - [DISCONNECT] Client user23 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user23 left room 'general'
+2025-05-31 20:31:25 - [DISCONNECT] Client user24 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user24 left room 'projectX'
+2025-05-31 20:31:25 - [DISCONNECT] Client user25 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user25 left room 'general'
+2025-05-31 20:31:25 - [DISCONNECT] Client user26 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user26 left room 'projectX'
+2025-05-31 20:31:25 - [DISCONNECT] Client user27 disconnected.
+2025-05-31 20:31:25 - [COMMAND] user27 left room 'general'
+2025-05-31 20:31:26 - [DISCONNECT] Client user28 disconnected.
+2025-05-31 20:31:26 - [COMMAND] user28 left room 'projectX'
+2025-05-31 20:31:26 - [DISCONNECT] Client user29 disconnected.
+2025-05-31 20:31:26 - [COMMAND] user29 left room 'general'
+2025-05-31 20:31:26 - [DISCONNECT] Client user30 disconnected.
+2025-05-31 20:31:26 - [COMMAND] user30 left room 'projectX'
+2025-05-31 20:31:32 - [SHUTDOWN_CTRLC] SIGINT received. Initiating graceful server shutdown...
+2025-05-31 20:31:32 - [INFO] Server has stopped accepting new client connections.
+2025-05-31 20:31:32 - [INFO] Server main accept loop has ended. Proceeding with full shutdown sequence.
+2025-05-31 20:31:32 - [INFO] Starting final server resource cleanup. Active clients at start of shutdown: 0
+2025-05-31 20:31:32 - [INFO] Cleaning up file transfer system...
+2025-05-31 20:31:32 - [INFO] Waiting for file worker threads to terminate...
+2025-05-31 20:31:32 - [INFO] File worker thread (ID 2) stopping.
+2025-05-31 20:31:32 - [INFO] File worker thread (ID 1) stopping.
+2025-05-31 20:31:32 - [INFO] File worker thread (ID 4) stopping.
+2025-05-31 20:31:32 - [INFO] File worker thread (ID 3) stopping.
+2025-05-31 20:31:32 - [INFO] File worker thread (ID 0) stopping.
+2025-05-31 20:31:32 - [INFO] All file worker threads have terminated.
+2025-05-31 20:31:32 - [INFO] File transfer system resources released.
+2025-05-31 20:31:32 - [INFO] Server Shutdown: Notifying and closing active client sockets...
+2025-05-31 20:31:32 - [INFO] Server Shutdown: Allowing a moment for client threads to self-terminate...
+2025-05-31 20:31:34 - [SHUTDOWN] SIGINT received. Disconnecting 0 clients, saving logs.
+2025-05-31 20:31:34 - [INFO] Server resource cleanup sequence complete.
+2025-05-31 20:31:34 - [INFO] Server logging system shutting down.
