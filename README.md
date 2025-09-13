@@ -43,22 +43,22 @@ This repository contains various homework assignments and projects related to sy
 ## Assignments Overview
 
 ### Homework 1 (hw1/)
-Basic file management utilities in C, including file operations and utilities.
+A comprehensive file management utility written in C that provides essential file and directory operations with built-in logging capabilities and file locking mechanisms. Features include directory creation/deletion, file operations, directory listing with extension filtering, process management, and thread-safe operations using `flock()`.
 
 ### Homework 2 (hw2/)
-System programming concepts, possibly involving processes or threads.
+An inter-process communication program using named pipes (FIFOs), signal handling, and daemon processes. Demonstrates advanced system programming concepts including multi-process architecture, FIFO communication, proper signal handling, zombie process prevention, and background daemon logging.
 
 ### Homework 3 (hw3/)
-Advanced system programming assignment.
+Advanced system programming assignment focusing on core system concepts. Implementation details available in the main source file and accompanying report.
 
 ### Homework 4 (hw4/)
-Buffer implementation with logging capabilities.
+Buffer implementation project with logging capabilities. Includes buffer management, system programming concepts, and comprehensive logging functionality for debugging and monitoring.
 
 ### Midterm (midterm/)
-Bank simulation with client-server architecture, concurrency, and comprehensive testing.
+Bank client-server simulation with automated testing. Features client-server architecture, teller processes, concurrency handling, comprehensive test suites including memory leak detection, and various test cases for error handling and stress testing.
 
 ### Final Project (final/)
-Complete client-server chat application with room management, file transfer, and logging.
+Complete client-server chat application with advanced features including room management, file transfer capabilities, logging system, and multi-client support. Includes separate client and server implementations with shared utilities and automated launch scripts.
 
 ## Build & Run
 
