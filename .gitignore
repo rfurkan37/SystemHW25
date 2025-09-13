@@ -1,5 +1,27 @@
-.gitignore
+# Build artifacts
+*.o
+*.ko
+*.obj
+*.elf
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.so.*
+*.dylib
+*.lib
+*.a
+*.la
+*.lo
+
+# macOS
 .DS_Store
+
+# VS Code
+.vscode/
+
+# Specific files
 hw2/.vscode/settings.json
 210104004042_HW1.zip
 210104004042_HW2.zip
